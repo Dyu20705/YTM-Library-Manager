@@ -2,8 +2,11 @@ import { MutationIntent, MutationState, RemoteMutationResult } from './mutation.
 
 export interface RestoreMembershipEntry {
   videoId: string;
+  remoteItemId?: string; // Occurrence identity (setVideoId)
   predecessorVideoId?: string; // Anchor: item before in Base state
   successorVideoId?: string;   // Anchor: item after in Base state
+  predecessorRemoteItemId?: string;
+  successorRemoteItemId?: string;
   originalPosition?: number;   // DIAGNOSTIC ONLY — not used for restore logic
 }
 
@@ -13,12 +16,15 @@ export interface RollbackIntent {
   kind: RollbackIntentKind;
   targetPlaylistId: string;
   restoreMembership?: RestoreMembershipEntry[];
-  undoMembership?: Array<{ videoId: string }>;
+  undoMembership?: Array<{ videoId: string; remoteItemId?: string }>;
   undoMove?: {
     videoId: string;
+    remoteItemId?: string;
     originalPosition?: number; // diagnostic only
     predecessorVideoId?: string;
     successorVideoId?: string;
+    predecessorRemoteItemId?: string;
+    successorRemoteItemId?: string;
   };
 }
 

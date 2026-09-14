@@ -80,31 +80,67 @@ export class ReconciliationEngine {
 
     // Rule 5: CONFLICT_ON_EXTERNAL_REORDER (Conservative V1 Policy, Review §18)
     // Find items present in both Base and Current that were NOT part of our mutation
-    const affectedVideoIds = new Set<string>();
+    const affectedRemoteItemIds = new Set<string>();
+    const affectedVideoIdsFallback = new Set<string>();
+
     if (rollbackIntent.restoreMembership) {
-      rollbackIntent.restoreMembership.forEach(e => affectedVideoIds.add(e.videoId));
+      rollbackIntent.restoreMembership.forEach(e => {
+        if (e.remoteItemId) {
+          affectedRemoteItemIds.add(e.remoteItemId);
+        } else {
+          affectedVideoIdsFallback.add(e.videoId);
+        }
+      });
     }
     if (rollbackIntent.undoMembership) {
-      rollbackIntent.undoMembership.forEach(e => affectedVideoIds.add(e.videoId));
+      rollbackIntent.undoMembership.forEach(e => {
+        if (e.remoteItemId) {
+          affectedRemoteItemIds.add(e.remoteItemId);
+        } else {
+          affectedVideoIdsFallback.add(e.videoId);
+        }
+      });
     }
     if (rollbackIntent.undoMove) {
-      affectedVideoIds.add(rollbackIntent.undoMove.videoId);
+      if (rollbackIntent.undoMove.remoteItemId) {
+        affectedRemoteItemIds.add(rollbackIntent.undoMove.remoteItemId);
+      } else {
+        affectedVideoIdsFallback.add(rollbackIntent.undoMove.videoId);
+      }
     }
 
+    const isItemAffected = (item: OccurrenceItem): boolean => {
+      if (item.remoteItemId && affectedRemoteItemIds.has(item.remoteItemId)) {
+        return true;
+      }
+      if (!item.remoteItemId && affectedVideoIdsFallback.has(item.videoId)) {
+        return true;
+      }
+      if (affectedVideoIdsFallback.has(item.videoId) && affectedRemoteItemIds.size === 0) {
+        return true;
+      }
+      return false;
+    };
+
+    const getOccurrenceKey = (item: OccurrenceItem): string => item.remoteItemId || item.videoId;
+
     const unchangedInBase = baseItems
-      .filter(i => !affectedVideoIds.has(i.videoId))
-      .map(i => i.videoId);
+      .filter(i => !isItemAffected(i))
+      .map(getOccurrenceKey);
 
     const unchangedInCurrent = currentItems
-      .filter(i => !affectedVideoIds.has(i.videoId))
-      .map(i => i.videoId);
+      .filter(i => !isItemAffected(i))
+      .map(getOccurrenceKey);
 
-    // Filter to common items between both
-    const commonInBase = unchangedInBase.filter(id => unchangedInCurrent.includes(id));
-    const commonInCurrent = unchangedInCurrent.filter(id => unchangedInBase.includes(id));
+    const currentKeySet = new Set(unchangedInCurrent);
+    const baseKeySet = new Set(unchangedInBase);
 
-    // Compare ordering
-    const isReordered = commonInBase.some((id, idx) => id !== commonInCurrent[idx]);
+    // Filter to common occurrences between both
+    const commonInBase = unchangedInBase.filter(key => currentKeySet.has(key));
+    const commonInCurrent = unchangedInCurrent.filter(key => baseKeySet.has(key));
+
+    // Compare ordering of common occurrences
+    const isReordered = commonInBase.some((key, idx) => key !== commonInCurrent[idx]);
     if (isReordered) {
       return {
         state: 'CONFLICT',
@@ -125,22 +161,37 @@ export class ReconciliationEngine {
         // Find anchor position in current
         let insertIndex = -1;
 
-        if (entry.predecessorVideoId) {
+        if (entry.predecessorRemoteItemId) {
+          const predIdx = currentItems.findIndex(i => i.remoteItemId === entry.predecessorRemoteItemId);
+          if (predIdx !== -1) {
+            insertIndex = predIdx + 1;
+          }
+        } else if (entry.predecessorVideoId) {
           const predIdx = resultOrder.indexOf(entry.predecessorVideoId);
           if (predIdx !== -1) {
             insertIndex = predIdx + 1;
           }
         }
 
-        if (insertIndex === -1 && entry.successorVideoId) {
-          const succIdx = resultOrder.indexOf(entry.successorVideoId);
-          if (succIdx !== -1) {
-            insertIndex = succIdx;
+        if (insertIndex === -1) {
+          if (entry.successorRemoteItemId) {
+            const succIdx = currentItems.findIndex(i => i.remoteItemId === entry.successorRemoteItemId);
+            if (succIdx !== -1) {
+              insertIndex = succIdx;
+            }
+          } else if (entry.successorVideoId) {
+            const succIdx = resultOrder.indexOf(entry.successorVideoId);
+            if (succIdx !== -1) {
+              insertIndex = succIdx;
+            }
           }
         }
 
         // If neither anchor exists anymore -> CONFLICT
-        if (insertIndex === -1 && (entry.predecessorVideoId || entry.successorVideoId)) {
+        if (
+          insertIndex === -1 &&
+          (entry.predecessorRemoteItemId || entry.successorRemoteItemId || entry.predecessorVideoId || entry.successorVideoId)
+        ) {
           return {
             state: 'CONFLICT',
             conflictReason: `Relative anchors for track ${entry.videoId} were removed externally`,

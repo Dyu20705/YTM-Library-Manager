@@ -132,4 +132,34 @@ describe('GATE-04: Reconciliation & Conflict Detection (Review §29 Scenarios)',
     // Result preserves Z, and inserts X between B and C
     expect(res.reconciledOrder).toEqual(['A', 'Z', 'B', 'X', 'C']);
   });
+
+  // Test 7: Duplicate occurrences of same videoId disambiguated by remoteItemId (P0-4)
+  it('Test 7: Duplicate occurrences of same videoId disambiguated by remoteItemId without conflict (P0-4)', () => {
+    const baseItems: OccurrenceItem[] = [
+      { videoId: 'A', remoteItemId: 'rA_first', position: 0 },
+      { videoId: 'B', remoteItemId: 'rB', position: 1 },
+      { videoId: 'A', remoteItemId: 'rA_second', position: 2 }
+    ];
+
+    // Only the second occurrence 'rA_second' was removed by us; 'rA_first' and 'rB' remain untouched
+    const currentItems: OccurrenceItem[] = [
+      { videoId: 'A', remoteItemId: 'rA_first', position: 0 },
+      { videoId: 'B', remoteItemId: 'rB', position: 1 }
+    ];
+
+    const rollbackIntent: RollbackIntent = {
+      kind: 'RESTORE_REMOVED',
+      targetPlaylistId: 'PL1',
+      restoreMembership: [{
+        videoId: 'A',
+        remoteItemId: 'rA_second',
+        predecessorRemoteItemId: 'rB'
+      }]
+    };
+
+    const res = ReconciliationEngine.reconcileRollback(baseItems, currentItems, rollbackIntent);
+
+    expect(res.state).toBe('READY');
+    expect(res.reconciledOrder).toEqual(['A', 'B', 'A']);
+  });
 });
