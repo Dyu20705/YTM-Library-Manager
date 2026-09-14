@@ -3,6 +3,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { MigrationRunner } from './migrations.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -29,6 +31,10 @@ export class DatabaseConnection {
     const schemaFile = options.schemaPath ?? path.join(__dirname, 'schema.sql');
     if (fs.existsSync(schemaFile)) {
       this.initSchema(schemaFile);
+      const runner = new MigrationRunner(this.db, this.dbPath);
+      if (runner.getCurrentVersion() === 0) {
+        this.db.prepare("INSERT INTO schema_migrations (version, description) VALUES (1, 'Baseline V1 schema');").run();
+      }
     }
   }
 
