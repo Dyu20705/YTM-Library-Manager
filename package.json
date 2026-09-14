@@ -1,0 +1,32 @@
+{
+  "name": "ytm-library-manager",
+  "version": "1.1.2",
+  "description": "Local-first management, query, and safe mutation layer for YouTube Music",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc && vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:invariants": "vitest run tests/invariants",
+    "test:gates": "vitest run tests/gates",
+    "dev": "vite"
+  },
+  "keywords": ["youtube-music", "ytmusic", "library-manager", "local-first", "sqlite", "fts5"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0",
+    "vitest": "^3.0.5"
+  },
+  "dependencies": {
+    "lucide-react": "^0.475.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

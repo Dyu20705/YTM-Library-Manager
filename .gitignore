@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.venv/
+*.db
+*.db-wal
+*.db-shm
+*.bak.*
+.DS_Store
+v1/
