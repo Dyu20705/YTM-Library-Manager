@@ -1,0 +1,3 @@
+# Candidate version pinned per V1.1.2 Final Contract Patch P1-4
+ytmusicapi==1.12.2
+requests>=2.22
