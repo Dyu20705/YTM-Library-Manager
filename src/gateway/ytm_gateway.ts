@@ -9,7 +9,7 @@ import {
 } from './interfaces.js';
 import { MoveAnchor, RemoteMutationResult } from '../domain/mutation.js';
 import { RatingState } from '../domain/types.js';
-import { RemoteError } from './errors.js';
+import { RemoteError, RemoteErrorCode } from './errors.js';
 import { RemoteObservationCache } from './observation_cache.js';
 
 export interface YtmGatewayOptions {
@@ -55,7 +55,8 @@ export class SubprocessYtmGateway implements YtmPlaylistGateway {
         if (code !== 0) {
           try {
             const errJson = JSON.parse(stdout || stderr);
-            return reject(new RemoteError('INVALID_REQUEST', errJson.message ?? 'Unknown bridge error'));
+            const errCode = (errJson.code as RemoteErrorCode) ?? 'INVALID_REQUEST';
+            return reject(new RemoteError(errCode, errJson.message ?? 'Unknown bridge error', errJson.retryAfterSeconds));
           } catch {
             return reject(new RemoteError('REMOTE_UNAVAILABLE', stderr || `Process exited with code ${code}`));
           }
@@ -64,7 +65,8 @@ export class SubprocessYtmGateway implements YtmPlaylistGateway {
         try {
           const res = JSON.parse(stdout);
           if (res.status === 'error') {
-            return reject(new RemoteError('INVALID_REQUEST', res.message));
+            const errCode = (res.code as RemoteErrorCode) ?? 'INVALID_REQUEST';
+            return reject(new RemoteError(errCode, res.message ?? 'Unknown bridge error', res.retryAfterSeconds));
           }
           resolve((res.data !== undefined ? res.data : res) as T);
         } catch (err) {
@@ -76,22 +78,28 @@ export class SubprocessYtmGateway implements YtmPlaylistGateway {
 
   public async getPlaylists(): Promise<RemotePlaylistSummary[]> {
     const raw = await this.callBridge<any[]>('get_library_playlists');
-    return (raw || []).map(p => ({
-      id: p.playlistId ?? p.id,
-      title: p.title,
-      description: p.description ?? null,
-      trackCount: p.count ?? p.trackCount ?? 0,
-      ownerName: p.author ? (typeof p.author === 'string' ? p.author : p.author[0]?.name) : null,
-      isEditable: true
-    }));
+    return (raw || []).map(p => {
+      const id = p.playlistId ?? p.id;
+      const isSystemPlaylist = id === 'LM';
+      const isEditable = !isSystemPlaylist && Boolean(p.owned ?? p.isEditable ?? false);
+      return {
+        id,
+        title: p.title,
+        description: p.description ?? null,
+        trackCount: typeof p.count === 'string' ? parseInt(p.count, 10) : (p.count ?? p.trackCount ?? 0),
+        ownerName: p.author ? (typeof p.author === 'string' ? p.author : p.author[0]?.name) : null,
+        isEditable
+      };
+    });
   }
 
   public async getPlaylistItems(
     playlistId: string,
-    limit = 100
+    limit = 100,
+    cursor?: string
   ): Promise<{ items: RemoteTrackItem[]; nextCursor?: string }> {
-    const raw = await this.callBridge<any>('get_playlist', { playlistId, limit });
-    const tracks = raw.tracks ?? [];
+    const raw = await this.callBridge<any>('get_playlist', { playlistId, limit, cursor });
+    const tracks = raw?.tracks ?? (Array.isArray(raw) ? raw : []);
 
     const items: RemoteTrackItem[] = tracks.map((t: any) => {
       const videoId = t.videoId;
@@ -116,7 +124,7 @@ export class SubprocessYtmGateway implements YtmPlaylistGateway {
       };
     });
 
-    return { items };
+    return { items, nextCursor: raw?.nextCursor ?? undefined };
   }
 
   public async getLibrarySongs(limit = 100): Promise<RemoteTrackItem[]> {
@@ -179,8 +187,30 @@ export class SubprocessYtmGateway implements YtmPlaylistGateway {
     };
   }
 
-  public async moveItem(_playlistId: string, _itemRemoteId: string, _anchor: MoveAnchor): Promise<RemoteMutationResult> {
-    throw new RemoteError('UNSUPPORTED_OPERATION', 'Direct move via ytmusicapi bridge requires setVideoId successor anchor');
+  public async moveItem(playlistId: string, itemRemoteId: string, anchor: MoveAnchor): Promise<RemoteMutationResult> {
+    if (playlistId === 'LM') {
+      throw new RemoteError('UNSUPPORTED_OPERATION', 'Cannot reorder items in Liked Music playlist.');
+    }
+
+    const successorRemoteId = anchor.type === 'BEFORE' ? anchor.remoteItemId : undefined;
+    await this.callBridge<any>('move_playlist_item', {
+      playlistId,
+      itemRemoteId,
+      successorRemoteId
+    });
+
+    return {
+      operationId: crypto.randomUUID(),
+      state: 'COMPLETED',
+      requestedCount: 1,
+      appliedCount: 1,
+      failedCount: 0,
+      unknownCount: 0,
+      appliedItems: [{ videoId: itemRemoteId, remoteItemId: itemRemoteId }],
+      failedItems: [],
+      unknownItems: [],
+      remoteObservedAt: new Date()
+    };
   }
 
   public async rateSong(videoId: string, rating: RatingState): Promise<RemoteMutationResult> {
@@ -202,9 +232,12 @@ export class SubprocessYtmGateway implements YtmPlaylistGateway {
   public async setLibraryStatus(videoId: string, desiredInLibrary: boolean): Promise<RemoteMutationResult> {
     let tokens = this.observationCache.getTokens(videoId);
     if (!tokens) {
-      // Need fresh tokens
-      await this.getLibrarySongs(50);
-      tokens = this.observationCache.getTokens(videoId);
+      // Dedicated context resolver for feedback tokens on cache miss (P0-5)
+      const resolvedTokens = await this.callBridge<{ add?: string; remove?: string } | null>('resolve_feedback_tokens', { videoId });
+      if (resolvedTokens) {
+        this.observationCache.setTokens(videoId, resolvedTokens);
+        tokens = resolvedTokens;
+      }
     }
 
     const token = desiredInLibrary ? tokens?.add : tokens?.remove;

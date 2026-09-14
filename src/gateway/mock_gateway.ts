@@ -117,20 +117,33 @@ export class MockYtmGateway implements YtmPlaylistGateway {
 
   public async getPlaylistItems(
     playlistId: string,
-    _limit?: number,
-    _cursor?: string
+    limit?: number,
+    cursor?: string
   ): Promise<{ items: RemoteTrackItem[]; nextCursor?: string }> {
     this.checkRateLimit();
-    const items = this.playlistItems.get(playlistId) ?? [];
+    const allItems = this.playlistItems.get(playlistId) ?? [];
+
+    let startIndex = 0;
+    if (cursor) {
+      const parsed = parseInt(cursor, 10);
+      if (!isNaN(parsed) && parsed >= 0) {
+        startIndex = parsed;
+      }
+    }
+
+    const pageSize = limit ?? allItems.length;
+    const pageItems = allItems.slice(startIndex, startIndex + pageSize);
+    const nextIndex = startIndex + pageSize;
+    const nextCursor = nextIndex < allItems.length ? String(nextIndex) : undefined;
 
     // Cache feedback tokens if present
-    for (const item of items) {
+    for (const item of pageItems) {
       if (item.feedbackTokens) {
         this.observationCache.setTokens(item.videoId, item.feedbackTokens);
       }
     }
 
-    return { items: [...items] };
+    return { items: [...pageItems], nextCursor };
   }
 
   public async getLibrarySongs(_limit?: number): Promise<RemoteTrackItem[]> {

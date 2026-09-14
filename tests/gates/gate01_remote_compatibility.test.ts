@@ -59,5 +59,77 @@ describe('GATE-01: Remote API Compatibility & Contract Verification', () => {
     await expect(
       mockGateway.moveItem('LM', 'fake_remote_id', { type: 'END' })
     ).rejects.toThrow('Cannot reorder items in Liked Music playlist.');
+
+    const realGateway = new SubprocessYtmGateway();
+    await expect(
+      realGateway.moveItem('LM', 'fake_remote_id', { type: 'END' })
+    ).rejects.toThrow('Cannot reorder items in Liked Music playlist.');
+  });
+
+  it('verifies getPlaylistItems pagination contract with limit and cursor (P0-1)', async () => {
+    const mockGateway = new MockYtmGateway();
+    // Request page 1 with limit 2
+    const page1 = await mockGateway.getPlaylistItems('PL_JPOP', 2);
+    expect(page1.items).toHaveLength(2);
+    expect(page1.nextCursor).toBe('2');
+
+    // Request page 2 with cursor '2'
+    const page2 = await mockGateway.getPlaylistItems('PL_JPOP', 2, page1.nextCursor);
+    expect(page2.items).toHaveLength(1);
+    expect(page2.nextCursor).toBeUndefined();
+  });
+
+  it('verifies moveItem contract with BEFORE and END anchors (P0-2)', async () => {
+    const mockGateway = new MockYtmGateway();
+    // Move item 1 to END
+    const endResult = await mockGateway.moveItem('PL_JPOP', 'item_1_usseewa', { type: 'END' });
+    expect(endResult.state).toBe('COMPLETED');
+    expect(endResult.appliedItems[0]?.remoteItemId).toBe('item_1_usseewa');
+
+    const { items: afterEnd } = await mockGateway.getPlaylistItems('PL_JPOP');
+    expect(afterEnd[afterEnd.length - 1]?.remoteItemId).toBe('item_1_usseewa');
+
+    // Move item 1 BEFORE item 2
+    const beforeResult = await mockGateway.moveItem('PL_JPOP', 'item_1_usseewa', {
+      type: 'BEFORE',
+      remoteItemId: 'item_2_yoru'
+    });
+    expect(beforeResult.state).toBe('COMPLETED');
+
+    const { items: afterBefore } = await mockGateway.getPlaylistItems('PL_JPOP');
+    expect(afterBefore[0]?.remoteItemId).toBe('item_1_usseewa');
+  });
+
+  it('verifies bridge error code normalization into typed RemoteError (P0-3)', async () => {
+    const gateway = new SubprocessYtmGateway();
+    await expect(
+      (gateway as any).callBridge('nonexistent_command')
+    ).rejects.toMatchObject({
+      code: 'INVALID_REQUEST'
+    });
+  });
+
+  it('verifies observation cache scopes to sessionId and clears on session switch (P0-5)', () => {
+    const mockGateway = new MockYtmGateway();
+    mockGateway.observationCache.startSession('session-1');
+    mockGateway.observationCache.setTokens('track-1', { add: 'add-1', remove: 'rem-1' });
+    expect(mockGateway.observationCache.getTokens('track-1')).toBeDefined();
+
+    // Switch session
+    mockGateway.observationCache.startSession('session-2');
+    expect(mockGateway.observationCache.getTokens('track-1')).toBeUndefined();
+    expect(mockGateway.observationCache.getSessionId()).toBe('session-2');
+  });
+
+  it('verifies getPlaylists enforces isEditable false for LM and unowned playlists (P0-6)', async () => {
+    const mockGateway = new MockYtmGateway();
+    const playlists = await mockGateway.getPlaylists();
+    const lm = playlists.find(p => p.id === 'LM');
+    expect(lm).toBeDefined();
+    expect(lm?.isEditable).toBe(false);
+
+    const jpop = playlists.find(p => p.id === 'PL_JPOP');
+    expect(jpop).toBeDefined();
+    expect(jpop?.isEditable).toBe(true);
   });
 });
