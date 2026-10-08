@@ -17,7 +17,7 @@ export interface Token {
   pos: number;
 }
 
-const IDENTIFIERS = new Set(['artist', 'album', 'playlist', 'year', 'duration', 'liked']);
+const IDENTIFIERS = new Set(['artist', 'album', 'playlist', 'year', 'duration', 'liked', 'title']);
 
 export class Lexer {
   private pos = 0;
@@ -117,6 +117,7 @@ export class Lexer {
     if (this.pos < this.input.length && this.input[this.pos] === '"') {
       this.pos++; // Skip close quote
     }
+    else throw new Error(`Unclosed quoted string at position ${startPos}`);
     return { type: 'QUOTED_STRING', value, pos: startPos };
   }
 

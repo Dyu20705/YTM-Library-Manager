@@ -20,6 +20,7 @@ export class Parser {
       return null;
     }
     const expr = this.orExpr();
+    if (!this.isAtEnd()) throw new Error(`Unexpected token at position ${this.peek().pos}`);
     return expr;
   }
 

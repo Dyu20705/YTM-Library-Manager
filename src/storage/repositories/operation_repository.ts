@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { OperationLog, OperationType } from '../../domain/operation.js';
 import { MutationIntent, MutationState, RemoteMutationResult } from '../../domain/mutation.js';
 import { assertInvariant } from '../../domain/invariants.js';
+import { LogSanitizer } from '../../gateway/sanitizer.js';
 
 export class OperationRepository {
   constructor(private readonly db: DatabaseSync) {}
@@ -22,11 +23,11 @@ export class OperationRepository {
       op.type,
       op.state,
       op.failureReason ?? null,
-      op.failureMessage ?? null,
-      JSON.stringify(op.preconditions),
-      JSON.stringify(op.intendedChanges),
-      op.actualResults ? JSON.stringify(op.actualResults) : null,
-      op.rollbackIntent ? JSON.stringify(op.rollbackIntent) : null
+      op.failureMessage ? LogSanitizer.sanitize(op.failureMessage) : null,
+      LogSanitizer.sanitize(JSON.stringify(op.preconditions)),
+      LogSanitizer.sanitize(JSON.stringify(op.intendedChanges)),
+      op.actualResults ? LogSanitizer.sanitize(JSON.stringify(op.actualResults)) : null,
+      op.rollbackIntent ? LogSanitizer.sanitize(JSON.stringify(op.rollbackIntent)) : null
     );
   }
 
@@ -86,9 +87,9 @@ export class OperationRepository {
 
     stmt.run(
       newState,
-      actualResults ? JSON.stringify(actualResults) : null,
+      actualResults ? LogSanitizer.sanitize(JSON.stringify(actualResults)) : null,
       failureReason ?? null,
-      failureMessage ?? null,
+      failureMessage ? LogSanitizer.sanitize(failureMessage) : null,
       id
     );
   }

@@ -11,18 +11,11 @@ from typing import Any, Dict, Optional, Tuple
 
 def get_ytmusic_client(auth_file: str | None = None):
     from ytmusicapi import YTMusic
-    if auth_file and os.path.exists(auth_file):
+    if auth_file:
+        if not os.path.isfile(auth_file):
+            raise FileNotFoundError("Configured authentication file is unavailable")
         return YTMusic(auth_file)
     return YTMusic()
-
-def safe_get_continuation_token(items: list) -> Optional[str]:
-    if not items:
-        return None
-    try:
-        from ytmusicapi.continuations import get_continuation_token
-        return get_continuation_token(items)
-    except Exception:
-        return None
 
 def normalize_exception(e: Exception) -> Tuple[str, str, Optional[int]]:
     """
@@ -51,53 +44,17 @@ def normalize_exception(e: Exception) -> Tuple[str, str, Optional[int]]:
 
     return "INVALID_REQUEST", msg, None
 
-def get_playlist_with_pagination(yt, playlist_id: str, limit: Optional[int] = 100, cursor: Optional[str] = None) -> Dict[str, Any]:
-    from ytmusicapi.navigation import nav
-    from ytmusicapi.mixins.playlists import TWO_COLUMN_RENDERER, SECTION, CONTENT
-    from ytmusicapi.parsers.playlists import parse_playlist_items
-    from ytmusicapi.continuations import CONTINUATION_ITEMS
-
-    if cursor:
-        response = yt._send_request("browse", {"continuation": cursor})
-        continuation_items = nav(response, CONTINUATION_ITEMS, True) or []
-        tracks = parse_playlist_items(continuation_items) if continuation_items else []
-        next_cursor = safe_get_continuation_token(continuation_items)
-        return {"tracks": tracks, "nextCursor": next_cursor}
-
-    # First page without cursor
-    browseId = "VL" + playlist_id if not playlist_id.startswith("VL") else playlist_id
-    endpoint = "browse"
-    response = yt._send_request(endpoint, {"browseId": browseId})
-
-    section_list = nav(response, [*TWO_COLUMN_RENDERER, "secondaryContents", *SECTION], True)
-    if not section_list:
-        pl = yt.get_playlist(playlist_id, limit=limit)
-        return {"tracks": pl.get("tracks", []), "nextCursor": None}
-
-    content_data = nav(section_list, [*CONTENT, "musicPlaylistShelfRenderer"], True)
-    if not content_data or "contents" not in content_data:
-        return {"tracks": [], "nextCursor": None}
-
-    contents = content_data["contents"]
-    tracks = parse_playlist_items(contents)
-    next_cursor = safe_get_continuation_token(contents)
-
-    # If caller specified a limit greater than first page and continuation exists, follow it
-    if limit is not None and len(tracks) < limit and next_cursor:
-        while next_cursor and len(tracks) < limit:
-            cont_res = yt._send_request("browse", {"continuation": next_cursor})
-            cont_items = nav(cont_res, CONTINUATION_ITEMS, True) or []
-            if not cont_items:
-                next_cursor = None
-                break
-            batch = parse_playlist_items(cont_items)
-            if not batch:
-                next_cursor = None
-                break
-            tracks.extend(batch)
-            next_cursor = safe_get_continuation_token(cont_items)
-
-    return {"tracks": tracks, "nextCursor": next_cursor}
+def get_playlist_with_pagination(yt, playlist_id: str, limit=None, cursor=None) -> Dict[str, Any]:
+    # The pinned public API follows all continuations when limit=None. Do not
+    # use private renderer paths or treat a truncated first page as a snapshot.
+    if cursor is not None:
+        raise ValueError("This bridge returns a complete snapshot; cursors are unsupported")
+    playlist = yt.get_playlist(playlist_id, limit=None)
+    tracks = playlist["tracks"]
+    count = playlist.get("trackCount")
+    if isinstance(count, int) and len(tracks) != count:
+        raise ValueError("Incomplete or changing playlist snapshot; retry sync")
+    return {"tracks": tracks, "nextCursor": None, "expectedItemCount": count if isinstance(count, int) else None}
 
 def execute_command(cmd: str, args: Dict[str, Any], auth_file: str | None = None) -> Dict[str, Any]:
     if cmd == "ping":
@@ -107,18 +64,18 @@ def execute_command(cmd: str, args: Dict[str, Any], auth_file: str | None = None
     yt = get_ytmusic_client(auth_file)
 
     if cmd == "get_library_playlists":
-        playlists = yt.get_library_playlists(limit=args.get("limit", 100))
+        playlists = yt.get_library_playlists(limit=args.get("limit"))
         return {"status": "success", "data": playlists}
 
     elif cmd == "get_playlist":
         playlist_id = args["playlistId"]
-        limit = args.get("limit", 100)
+        limit = args.get("limit")
         cursor = args.get("cursor")
         data = get_playlist_with_pagination(yt, playlist_id, limit=limit, cursor=cursor)
         return {"status": "success", "data": data}
 
     elif cmd == "get_library_songs":
-        limit = args.get("limit", 100)
+        limit = args.get("limit")
         songs = yt.get_library_songs(limit=limit)
         return {"status": "success", "data": songs}
 
@@ -173,10 +130,8 @@ def execute_command(cmd: str, args: Dict[str, Any], auth_file: str | None = None
         return {"status": "error", "code": "INVALID_REQUEST", "message": f"Unknown command: {cmd}"}
 
 def main():
-    if len(sys.argv) > 1:
-        req_str = sys.argv[1]
-    else:
-        req_str = sys.stdin.read()
+    # Requests (including feedback tokens and auth paths) never travel in argv.
+    req_str = sys.stdin.read()
 
     if not req_str.strip():
         print(json.dumps({"status": "error", "code": "INVALID_REQUEST", "message": "Empty request"}))
@@ -193,11 +148,11 @@ def main():
             sys.exit(1)
         print(json.dumps(result))
     except Exception as e:
-        code, msg, retry_after = normalize_exception(e)
+        code, _, retry_after = normalize_exception(e)
         err_payload = {
             "status": "error",
             "code": code,
-            "message": msg,
+            "message": "Remote request failed",
             "type": type(e).__name__
         }
         if retry_after is not None:

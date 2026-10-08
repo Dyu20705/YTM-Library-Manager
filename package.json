@@ -10,7 +10,12 @@
     "test:watch": "vitest",
     "test:invariants": "vitest run tests/invariants",
     "test:gates": "vitest run tests/gates",
-    "dev": "vite"
+    "dev": "npm run build:server && node scripts/dev.mjs",
+    "build:server": "tsc",
+    "start": "node .local/build/src/server/main.js",
+    "test:bridge": "node scripts/test-bridge.mjs",
+    "test:browser": "npm run build && node scripts/browser-smoke.mjs",
+    "test:live:read": "npm run build:server && node scripts/live-read-smoke.mjs"
   },
   "keywords": ["youtube-music", "ytmusic", "library-manager", "local-first", "sqlite", "fts5"],
   "author": "",

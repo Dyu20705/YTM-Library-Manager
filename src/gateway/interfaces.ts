@@ -1,6 +1,12 @@
 import { MoveAnchor, RemoteMutationResult } from '../domain/mutation.js';
 import { RatingState } from '../domain/types.js';
 
+export interface PlaylistPage {
+  items: RemoteTrackItem[];
+  nextCursor?: string;
+  expectedItemCount?: number;
+}
+
 export interface AddItemRequest {
   videoId: string;
 }
@@ -19,6 +25,8 @@ export interface RemoteTrackItem {
   year?: number | null;
   remoteItemId?: string; // setVideoId (present for user playlists, absent for Liked Music)
   inLibrary?: boolean;
+  rating?: RatingState;
+  isAvailable?: boolean;
   feedbackTokens?: {
     add?: string;
     remove?: string;
@@ -61,8 +69,9 @@ export interface YtmTransport {
  * Domain layer interacts only via this port.
  */
 export interface YtmPlaylistGateway {
+  startSession?(sessionId: string): void;
   getPlaylists(): Promise<RemotePlaylistSummary[]>;
-  getPlaylistItems(playlistId: string, limit?: number, cursor?: string): Promise<{ items: RemoteTrackItem[]; nextCursor?: string }>;
+  getPlaylistItems(playlistId: string, limit?: number, cursor?: string): Promise<PlaylistPage>;
   getLibrarySongs(limit?: number): Promise<RemoteTrackItem[]>;
 
   addItems(playlistId: string, items: AddItemRequest[]): Promise<RemoteMutationResult>;

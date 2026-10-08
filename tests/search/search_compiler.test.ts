@@ -11,7 +11,7 @@ describe('SearchQueryCompiler', () => {
   it('compiles free-text terms into FTS5 MATCH', () => {
     const plan = SearchQueryCompiler.compile('YOASOBI');
     expect(plan.sql).toContain('tracks_fts MATCH ?');
-    expect(plan.params).toEqual(['YOASOBI*', 100]);
+    expect(plan.params).toEqual(['"YOASOBI"*', 100]);
   });
 
   it('compiles artist: field into relational track_artists and artists join', () => {

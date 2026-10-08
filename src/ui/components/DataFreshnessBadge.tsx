@@ -15,7 +15,7 @@ export const DataFreshnessBadge: React.FC<DataFreshnessBadgeProps> = ({
 }) => {
   const getLabel = () => {
     if (!freshness.lastSuccessfulSyncAt) {
-      return 'Never synced — Connect to start';
+      return freshness.lastSyncResult === 'FAILED' ? 'Sync failed — no successful snapshot' : 'Never synced';
     }
 
     const diffMs = Date.now() - freshness.lastSuccessfulSyncAt.getTime();
@@ -48,7 +48,7 @@ export const DataFreshnessBadge: React.FC<DataFreshnessBadgeProps> = ({
         ) : (
           <Clock size={13} color="#f59e0b" />
         )}
-        <span>{getLabel()}</span>
+        <span>{freshness.lastSyncResult === 'FAILED' && freshness.lastSuccessfulSyncAt ? 'Sync failed · ' : ''}{getLabel()}</span>
       </div>
 
       {onTriggerSync && (

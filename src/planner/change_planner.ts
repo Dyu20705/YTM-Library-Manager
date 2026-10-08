@@ -32,11 +32,13 @@ export class ChangePlanner {
     const skippedVideoIds: string[] = [];
     const toAdd: string[] = [];
 
+    const seen = new Set(existingVideoIds);
     for (const vId of videoIdsToAdd) {
-      if (existingVideoIds.has(vId)) {
+      if (seen.has(vId)) {
         skippedVideoIds.push(vId);
       } else {
         toAdd.push(vId);
+        seen.add(vId);
       }
     }
 
@@ -104,8 +106,9 @@ export class ChangePlanner {
         restoreEntries.push({
           videoId,
           originalPosition: cur.position, // Diagnostic only
-          predecessorVideoId: pred,
-          successorVideoId: succ
+          remoteItemId: cur.remoteItemId,
+          predecessorRemoteItemId: pred,
+          successorRemoteItemId: succ
         });
       }
     }
@@ -158,14 +161,16 @@ export class ChangePlanner {
       }
     };
 
+    const index = existingItems.findIndex(i => i.remoteItemId === itemToMove.remoteItemId);
     const rollbackIntent: RollbackIntent = {
       kind: 'UNDO_MOVED',
       targetPlaylistId: playlistId,
       undoMove: {
         videoId,
+        remoteItemId: itemToMove.remoteItemId,
         originalPosition: itemToMove.position,
-        predecessorVideoId: itemToMove.position > 0 ? existingItems[itemToMove.position - 1]?.remoteItemId : undefined,
-        successorVideoId: itemToMove.position + 1 < existingItems.length ? existingItems[itemToMove.position + 1]?.remoteItemId : undefined
+        predecessorRemoteItemId: index > 0 ? existingItems[index - 1]?.remoteItemId : undefined,
+        successorRemoteItemId: existingItems[index + 1]?.remoteItemId
       }
     };
 

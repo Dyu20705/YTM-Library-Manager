@@ -38,7 +38,9 @@ export class MigrationRunner {
       // If destructive and file path exists, backup before applying
       if (migration.isDestructive && this.dbFilePath && this.dbFilePath !== ':memory:' && fs.existsSync(this.dbFilePath)) {
         const backupPath = `${this.dbFilePath}.bak.${Date.now()}`;
-        fs.copyFileSync(this.dbFilePath, backupPath);
+        // SQLite takes a consistent snapshot including committed WAL frames.
+        // VACUUM INTO must run outside the migration transaction.
+        this.db.prepare('VACUUM INTO ?').run(backupPath);
       }
 
       this.db.exec('BEGIN TRANSACTION;');

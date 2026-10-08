@@ -63,7 +63,7 @@ describe('Change Planner, Move Compiler, and Exact Deduplication', () => {
     expect(removePlan.intents.length).toBe(1);
     expect(removePlan.summary.removedCount).toBe(1);
     expect(removePlan.rollbackIntent.kind).toBe('RESTORE_REMOVED');
-    expect(removePlan.rollbackIntent.restoreMembership?.[0]?.predecessorVideoId).toBe('rA');
-    expect(removePlan.rollbackIntent.restoreMembership?.[0]?.successorVideoId).toBe('rC');
+    expect(removePlan.rollbackIntent.restoreMembership?.[0]?.predecessorRemoteItemId).toBe('rA');
+    expect(removePlan.rollbackIntent.restoreMembership?.[0]?.successorRemoteItemId).toBe('rC');
   });
 });

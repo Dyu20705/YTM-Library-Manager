@@ -1,9 +1,9 @@
-import React from 'react';
-import { YtmTrack } from '../../domain/track.js';
+import React, { useEffect, useRef, useState } from 'react';
+import { TrackRow } from '../../application/contracts.js';
 import { Heart, Check, Trash2, Plus, RefreshCw } from 'lucide-react';
 
 interface VirtualTrackTableProps {
-  tracks: YtmTrack[];
+  tracks: TrackRow[];
   selectedTrackIds: Set<string>;
   onToggleSelectTrack: (videoId: string) => void;
   onSelectAll: () => void;
@@ -25,7 +25,23 @@ export const VirtualTrackTable: React.FC<VirtualTrackTableProps> = ({
   onRemoveSelected,
   isPlaylistView
 }) => {
-  const allSelected = tracks.length > 0 && selectedTrackIds.size === tracks.length;
+  const allSelected = tracks.length > 0 && tracks.every(t => selectedTrackIds.has(t.selectionId));
+  const viewport = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(480);
+  const rowHeight = 48;
+  useEffect(() => {
+    if (!viewport.current) return;
+    const observer = new ResizeObserver(([entry]) => setViewportHeight(entry!.contentRect.height));
+    observer.observe(viewport.current);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    if (viewport.current) viewport.current.scrollTop = 0;
+    setScrollTop(0);
+  }, [tracks]);
+  const start = Math.max(0, Math.floor(scrollTop / rowHeight) - 5);
+  const end = Math.min(tracks.length, start + Math.ceil(viewportHeight / rowHeight) + 10);
 
   const formatDuration = (sec: number) => {
     const mins = Math.floor(sec / 60);
@@ -167,19 +183,21 @@ export const VirtualTrackTable: React.FC<VirtualTrackTableProps> = ({
       </div>
 
       {/* Table Body (Virtualized or standard list) */}
-      <div style={{ flex: 1, overflowY: 'auto' }}>
+      <div ref={viewport} onScroll={e => setScrollTop(e.currentTarget.scrollTop)} style={{ flex: 1, overflowY: 'auto' }}>
         {tracks.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '48px', color: 'var(--text-muted)', fontSize: '13px' }}>
             No tracks found matching criteria.
           </div>
         ) : (
-          tracks.map((track, idx) => {
-            const isSelected = selectedTrackIds.has(track.videoId);
+          <div style={{ height: tracks.length * rowHeight, position: 'relative' }}>{tracks.slice(start, end).map((track, visibleIndex) => {
+            const idx = start + visibleIndex;
+            const isSelected = selectedTrackIds.has(track.selectionId);
             return (
               <div
-                key={`${track.videoId}_${idx}`}
-                onClick={() => onToggleSelectTrack(track.videoId)}
+                key={track.selectionId}
+                onClick={() => onToggleSelectTrack(track.selectionId)}
                 style={{
+                  position: 'absolute', top: idx * rowHeight, left: 0, right: 0, height: rowHeight, boxSizing: 'border-box',
                   display: 'grid',
                   gridTemplateColumns: '40px 40px 3fr 2fr 2fr 70px 60px 40px',
                   padding: '10px 12px',
@@ -241,7 +259,7 @@ export const VirtualTrackTable: React.FC<VirtualTrackTableProps> = ({
                 </div>
               </div>
             );
-          })
+          })}</div>
         )}
       </div>
     </div>

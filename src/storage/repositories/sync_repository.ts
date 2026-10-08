@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { SyncSession, SyncCheckpoint, StagingItem, StagingCompletionCheck } from '../../sync/types.js';
 import { TrackRepository } from './track_repository.js';
 import { PlaylistRepository } from './playlist_repository.js';
+import { RemotePlaylistSummary, RemoteTrackItem } from '../../gateway/interfaces.js';
 
 export class SyncRepository {
   private readonly trackRepo: TrackRepository;
@@ -34,6 +35,7 @@ export class SyncRepository {
     const stmt = this.db.prepare(`
       UPDATE sync_sessions
       SET status = ?,
+          total_playlists = ?,
           completed_playlists = ?,
           total_tracks_indexed = ?,
           completed_at = ?,
@@ -42,6 +44,7 @@ export class SyncRepository {
     `);
     stmt.run(
       session.status,
+      session.totalPlaylists,
       session.completedPlaylists,
       session.totalTracksIndexed,
       session.completedAt ? session.completedAt.toISOString() : null,
@@ -215,7 +218,7 @@ export class SyncRepository {
       this.db.prepare(`
         UPDATE sync_checkpoints
         SET state = 'COMMITTED', updated_at = ?
-        WHERE session_id = ? AND resource_id = ?;
+        WHERE session_id = ? AND resource_id = ? AND resource_type = 'PLAYLIST_ITEMS';
       `).run(now.toISOString(), sessionId, playlistId);
 
       // Clean up staging for this playlist
@@ -230,5 +233,56 @@ export class SyncRepository {
 
   public clearStaging(sessionId: string): void {
     this.db.prepare('DELETE FROM sync_staging WHERE session_id = ?;').run(sessionId);
+  }
+
+  public clearPlaylistStaging(sessionId: string, playlistId: string): void {
+    this.db.prepare('DELETE FROM sync_staging WHERE session_id = ? AND playlist_id = ?').run(sessionId, playlistId);
+  }
+
+  public getSessionPlaylistIds(sessionId: string): string[] {
+    return (this.db.prepare("SELECT resource_id FROM sync_checkpoints WHERE session_id = ? AND resource_type = 'PLAYLIST_LIST' AND resource_id != '__catalog__' ORDER BY resource_id")
+      .all(sessionId) as Array<{ resource_id: string }>).map(r => r.resource_id);
+  }
+
+  public getCommittedProgress(sessionId: string): { playlists: number; tracks: number } {
+    return this.db.prepare(`SELECT COUNT(*) AS playlists,
+      COALESCE(SUM((SELECT COUNT(*) FROM playlist_items pi WHERE pi.playlist_id = cp.resource_id)), 0) AS tracks
+      FROM sync_checkpoints cp WHERE session_id = ? AND resource_type = 'PLAYLIST_ITEMS' AND state = 'COMMITTED'`)
+      .get(sessionId) as { playlists: number; tracks: number };
+  }
+
+  public hasPlaylistList(sessionId: string): boolean {
+    return this.getCheckpoint(sessionId, 'PLAYLIST_LIST', '__catalog__')?.state === 'COMMITTED';
+  }
+
+  public registerPlaylists(sessionId: string, playlists: RemotePlaylistSummary[]): void {
+    this.db.exec('BEGIN TRANSACTION');
+    try {
+      for (const playlist of playlists) {
+        const previous = this.playlistRepo.getPlaylist(playlist.id);
+        this.playlistRepo.upsertPlaylist({ ...playlist, trackCount: previous?.trackCount ?? playlist.trackCount });
+        this.saveCheckpoint({ sessionId, resourceType: 'PLAYLIST_LIST', resourceId: playlist.id,
+          state: 'COMMITTED', pageIndex: 0, updatedAt: new Date() });
+      }
+      this.saveCheckpoint({ sessionId, resourceType: 'PLAYLIST_LIST', resourceId: '__catalog__',
+        state: 'COMMITTED', pageIndex: 0, updatedAt: new Date() });
+      this.db.exec('COMMIT');
+    } catch (err) { this.db.exec('ROLLBACK'); throw err; }
+  }
+
+  public commitLibrary(songs: RemoteTrackItem[], likedVideoIds: string[]): void {
+    this.db.exec('BEGIN TRANSACTION');
+    try {
+      this.db.exec("UPDATE tracks SET in_library = 0, rating = CASE WHEN rating = 'LIKE' THEN 'INDIFFERENT' ELSE rating END");
+      for (const song of songs) {
+        if (!song.videoId || typeof song.title !== 'string') throw new Error('Incomplete library song');
+        this.trackRepo.upsert({ ...song, inLibrary: true });
+      }
+      for (const videoId of likedVideoIds) this.trackRepo.setRating(videoId, 'LIKE');
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
   }
 }

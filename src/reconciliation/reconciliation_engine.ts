@@ -14,6 +14,7 @@ export interface UnknownReconciliationResult {
 export interface RollbackReconciliationResult {
   state: MutationState; // READY | CONFLICT
   reconciledOrder?: string[];
+  reconciledItems?: OccurrenceItem[];
   conflictReason?: string;
   diff?: {
     baseOrder: string[];
@@ -75,151 +76,84 @@ export class ReconciliationEngine {
     currentItems: OccurrenceItem[],
     rollbackIntent: RollbackIntent
   ): RollbackReconciliationResult {
-    const baseIds = baseItems.map(i => i.videoId);
-    const currentIds = currentItems.map(i => i.videoId);
-
-    // Rule 5: CONFLICT_ON_EXTERNAL_REORDER (Conservative V1 Policy, Review §18)
-    // Find items present in both Base and Current that were NOT part of our mutation
-    const affectedRemoteItemIds = new Set<string>();
-    const affectedVideoIdsFallback = new Set<string>();
-
-    if (rollbackIntent.restoreMembership) {
-      rollbackIntent.restoreMembership.forEach(e => {
-        if (e.remoteItemId) {
-          affectedRemoteItemIds.add(e.remoteItemId);
+    const key = (item: OccurrenceItem): string => item.remoteItemId ?? item.videoId;
+    const conflict = (reason: string): RollbackReconciliationResult => ({
+      state: 'CONFLICT', conflictReason: reason,
+      diff: { baseOrder: baseItems.map(key), currentOrder: currentItems.map(key), intentDescription: `Rollback ${rollbackIntent.kind}` }
+    });
+    const affected = new Set<string>();
+    const entries = rollbackIntent.restoreMembership ?? rollbackIntent.undoMembership ??
+      (rollbackIntent.undoMove ? [rollbackIntent.undoMove] : []);
+    for (const entry of entries) {
+      if (entry.remoteItemId) affected.add(entry.remoteItemId);
+      else {
+        const candidates = [...new Map([...baseItems, ...currentItems].filter(i => i.videoId === entry.videoId).map(i => [key(i), i])).values()];
+        if (rollbackIntent.kind === 'UNDO_ADDED') {
+          const baseKeys = new Set(baseItems.map(key));
+          const additions = candidates.filter(i => !baseKeys.has(key(i)));
+          if (additions.length > 1) return conflict('Ambiguous added occurrence identity');
+          additions.forEach(i => affected.add(key(i)));
         } else {
-          affectedVideoIdsFallback.add(e.videoId);
+          if (candidates.length > 1) return conflict('Ambiguous occurrence identity');
+          candidates.forEach(i => affected.add(key(i)));
         }
-      });
-    }
-    if (rollbackIntent.undoMembership) {
-      rollbackIntent.undoMembership.forEach(e => {
-        if (e.remoteItemId) {
-          affectedRemoteItemIds.add(e.remoteItemId);
-        } else {
-          affectedVideoIdsFallback.add(e.videoId);
-        }
-      });
-    }
-    if (rollbackIntent.undoMove) {
-      if (rollbackIntent.undoMove.remoteItemId) {
-        affectedRemoteItemIds.add(rollbackIntent.undoMove.remoteItemId);
-      } else {
-        affectedVideoIdsFallback.add(rollbackIntent.undoMove.videoId);
       }
     }
-
-    const isItemAffected = (item: OccurrenceItem): boolean => {
-      if (item.remoteItemId && affectedRemoteItemIds.has(item.remoteItemId)) {
-        return true;
-      }
-      if (!item.remoteItemId && affectedVideoIdsFallback.has(item.videoId)) {
-        return true;
-      }
-      if (affectedVideoIdsFallback.has(item.videoId) && affectedRemoteItemIds.size === 0) {
-        return true;
-      }
-      return false;
-    };
-
-    const getOccurrenceKey = (item: OccurrenceItem): string => item.remoteItemId || item.videoId;
-
-    const unchangedInBase = baseItems
-      .filter(i => !isItemAffected(i))
-      .map(getOccurrenceKey);
-
-    const unchangedInCurrent = currentItems
-      .filter(i => !isItemAffected(i))
-      .map(getOccurrenceKey);
-
-    const currentKeySet = new Set(unchangedInCurrent);
-    const baseKeySet = new Set(unchangedInBase);
-
-    // Filter to common occurrences between both
-    const commonInBase = unchangedInBase.filter(key => currentKeySet.has(key));
-    const commonInCurrent = unchangedInCurrent.filter(key => baseKeySet.has(key));
-
-    // Compare ordering of common occurrences
-    const isReordered = commonInBase.some((key, idx) => key !== commonInCurrent[idx]);
-    if (isReordered) {
-      return {
-        state: 'CONFLICT',
-        conflictReason: 'External reordering of unchanged playlist items detected (Rule 5 Conservative Policy)',
-        diff: {
-          baseOrder: baseIds,
-          currentOrder: currentIds,
-          intentDescription: `Rollback ${rollbackIntent.kind}`
-        }
-      };
+    const unaffectedBase = baseItems.filter(i => !affected.has(key(i))).map(key);
+    const unaffectedCurrent = currentItems.filter(i => !affected.has(key(i))).map(key);
+    const baseSet = new Set(unaffectedBase);
+    const currentSet = new Set(unaffectedCurrent);
+    const commonBase = unaffectedBase.filter(k => currentSet.has(k));
+    const commonCurrent = unaffectedCurrent.filter(k => baseSet.has(k));
+    if (commonBase.some((k, i) => k !== commonCurrent[i])) {
+      return conflict('External reordering of unchanged playlist items detected (Rule 5 Conservative Policy)');
     }
-
-    // Rule 1: Preserve external additions & Rule 3: Restore using relative anchors
-    if (rollbackIntent.kind === 'RESTORE_REMOVED' && rollbackIntent.restoreMembership) {
-      const resultOrder = [...currentIds];
-
-      for (const entry of rollbackIntent.restoreMembership) {
-        // Find anchor position in current
-        let insertIndex = -1;
-
-        if (entry.predecessorRemoteItemId) {
-          const predIdx = currentItems.findIndex(i => i.remoteItemId === entry.predecessorRemoteItemId);
-          if (predIdx !== -1) {
-            insertIndex = predIdx + 1;
+    let result = currentItems.map(i => ({ ...i }));
+    if (rollbackIntent.kind === 'UNDO_ADDED') {
+      // Remove only our bound additions, preserving identical songs added by others.
+      const baseKeys = new Set(baseItems.map(key));
+      if ([...affected].some(k => baseKeys.has(k))) return conflict('Undo would remove a pre-existing occurrence');
+      result = result.filter(i => !affected.has(key(i)));
+    } else {
+      const restores = rollbackIntent.kind === 'RESTORE_REMOVED' ? rollbackIntent.restoreMembership :
+        rollbackIntent.undoMove ? [rollbackIntent.undoMove] : undefined;
+      if (!restores) return conflict('Missing rollback entries');
+      const pending = [...restores];
+      // Resolve chains of adjacent removed anchors against the evolving result.
+      while (pending.length) {
+        let progress = false;
+        for (let e = 0; e < pending.length; e++) {
+          const entry = pending[e]!;
+          const candidates = result.filter(i => entry.remoteItemId ? i.remoteItemId === entry.remoteItemId : i.videoId === entry.videoId);
+          if (candidates.length > 1) return conflict('Ambiguous rollback occurrence');
+          if (rollbackIntent.kind === 'RESTORE_REMOVED' && candidates.length === 1) {
+            pending.splice(e--, 1); progress = true; continue;
           }
-        } else if (entry.predecessorVideoId) {
-          const predIdx = resultOrder.indexOf(entry.predecessorVideoId);
-          if (predIdx !== -1) {
-            insertIndex = predIdx + 1;
-          }
-        }
-
-        if (insertIndex === -1) {
-          if (entry.successorRemoteItemId) {
-            const succIdx = currentItems.findIndex(i => i.remoteItemId === entry.successorRemoteItemId);
-            if (succIdx !== -1) {
-              insertIndex = succIdx;
-            }
-          } else if (entry.successorVideoId) {
-            const succIdx = resultOrder.indexOf(entry.successorVideoId);
-            if (succIdx !== -1) {
-              insertIndex = succIdx;
-            }
-          }
-        }
-
-        // If neither anchor exists anymore -> CONFLICT
-        if (
-          insertIndex === -1 &&
-          (entry.predecessorRemoteItemId || entry.successorRemoteItemId || entry.predecessorVideoId || entry.successorVideoId)
-        ) {
-          return {
-            state: 'CONFLICT',
-            conflictReason: `Relative anchors for track ${entry.videoId} were removed externally`,
-            diff: {
-              baseOrder: baseIds,
-              currentOrder: currentIds,
-              intentDescription: `Restore track ${entry.videoId}`
-            }
+          if (rollbackIntent.kind === 'UNDO_MOVED' && candidates.length === 0) return conflict('Moved occurrence was removed externally');
+          const moving = candidates[0];
+          const remaining = moving ? result.filter(i => i !== moving) : result;
+          const anchorIndex = (remoteId?: string, videoId?: string): number => {
+            if (remoteId) return remaining.findIndex(i => i.remoteItemId === remoteId);
+            if (!videoId) return -1;
+            const matches = remaining.filter(i => i.videoId === videoId);
+            return matches.length === 1 ? remaining.indexOf(matches[0]!) : -1;
           };
+          const pred = anchorIndex(entry.predecessorRemoteItemId, entry.predecessorVideoId);
+          const succ = anchorIndex(entry.successorRemoteItemId, entry.successorVideoId);
+          if (pred >= 0 && succ >= 0 && pred >= succ) return conflict('Relative anchors are reversed');
+          const hasAnchors = entry.predecessorRemoteItemId || entry.predecessorVideoId || entry.successorRemoteItemId || entry.successorVideoId;
+          if (pred < 0 && succ < 0 && hasAnchors) continue;
+          // Prefer successor to preserve additions already occupying the original interval.
+          const index = succ >= 0 ? succ : pred >= 0 ? pred + 1 : remaining.length;
+          const restored = moving ?? { videoId: entry.videoId, remoteItemId: entry.remoteItemId, position: index };
+          remaining.splice(index, 0, restored);
+          result = remaining;
+          pending.splice(e--, 1); progress = true;
         }
-
-        if (insertIndex !== -1) {
-          resultOrder.splice(insertIndex, 0, entry.videoId);
-        } else {
-          resultOrder.push(entry.videoId);
-        }
+        if (!progress) return conflict('Relative anchors were removed externally or are ambiguous');
       }
-
-      return {
-        state: 'READY',
-        reconciledOrder: resultOrder
-      };
     }
-
-    // Default READY
-    return {
-      state: 'READY',
-      reconciledOrder: currentIds
-    };
+    result = result.map((item, position) => ({ ...item, position }));
+    return { state: 'READY', reconciledOrder: result.map(i => i.videoId), reconciledItems: result };
   }
 }

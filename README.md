@@ -1,6 +1,8 @@
 # YouTube Music (YTM) Library Manager
 
-A local-first management, advanced query, and safe mutation layer for YouTube Music. Designed with hexagonal architecture, strict domain invariant verification, and conservative reconciliation policies.
+A local-first YouTube Music library manager with a local Node.js service, SQLite storage, and a React Web UI.
+
+The application currently exposes **read-only account sync, local search, playlist browsing, and local folders**. Remote mutations are disabled in the HTTP API and UI. The gateway and planner contain mutation logic with conservative read-back outcomes, but live-account qualification, an approved mutation execution workflow, desktop packaging, and release artifacts remain outstanding. This is not a release-qualified build.
 
 ---
 
@@ -48,7 +50,7 @@ The library manager includes a lexer, recursive-descent parser, AST compiler, an
 
 - **Field filters:** `artist:"Ado"`, `album:"Kyogen"`, `title:"Usseewa"`
 - **Numeric & Range filters:** `year:2020..2024`, `duration:>180`
-- **Full-Text Search:** `query terms` compiled to SQLite FTS5 `NEAR()` and prefix matching
+- **Full-Text Search:** `query terms` compiled to parameterized SQLite FTS5 phrase/prefix matching
 - **Sorting:** `sort:dateAdded:desc`, `sort:title:asc`, `sort:duration:desc`
 
 ---
@@ -59,37 +61,85 @@ The library manager includes a lexer, recursive-descent parser, AST compiler, an
 - **Node.js:** v24+
 - **Python:** 3.12+
 
-### Setup
+### Setup (Linux/macOS)
 
 ```bash
-# Clone repository
-git clone https://github.com/Dyu20705/YTM-Library-Manager.git
-cd YTM-Library-Manager
-
-# Install Node dependencies
-npm install
-
-# Setup Python virtual environment & bridge dependencies
+npm ci
 python3 -m venv .venv
-source .venv/bin/activate
-pip install -r python/requirements.txt
+.venv/bin/python -m pip install -r python/requirements.txt
+npm run build
+npm test
+npm run test:bridge
 ```
 
-### Running Tests & Verification
+### Setup (Windows PowerShell)
+
+```powershell
+npm ci
+py -3.12 -m venv .venv
+.venv\Scripts\python.exe -m pip install -r python/requirements.txt
+npm run build
+npm test
+npm run test:bridge
+```
+
+Virtualenv activation is unnecessary. The gateway selects `.venv/bin/python3` on Unix or `.venv/Scripts/python.exe` on Windows. Windows CI is configured; it has not been run in the current Linux environment.
+
+### Run the local application
 
 ```bash
-# Run all vitest suites
-npm test
+npm run dev
+```
 
-# Run domain invariants suite (INV-001 - INV-023)
+This starts the loopback-only Node service on port 5174 and Vite on port 5173, with same-origin `/api` proxying. Restart `npm run dev` after editing backend TypeScript. Vite reloads frontend changes automatically. For a production bundle, run `npm run build` followed by `npm start`; the Node service serves both the API and built UI on port 5174.
+
+The app starts with an empty/local SQLite library, not sample tracks. Previously committed snapshots remain available offline. The default database is `.local/library.db`. `YTM_DB_PATH` overrides its location, `YTM_PYTHON_PATH` overrides the Python executable, and `YTM_PORT` overrides the production service port. Development proxying expects backend port 5174.
+
+### Connect and sync (read-only)
+
+Prepare a browser authentication file using the pinned ytmusicapi browser-auth instructions on your own machine. Keep it outside the repository; never paste credentials into chat or logs. Common auth filenames and `.local/` are ignored by Git, but an arbitrary filename is not automatically protected.
+
+Set the **path**, not the credential contents, before starting the service:
+
+```bash
+export YTM_AUTH_FILE=/private/path/browser.json
+npm run dev
+```
+
+On Windows PowerShell:
+
+```powershell
+$env:YTM_AUTH_FILE = 'C:\private\browser.json'
+npm run dev
+```
+
+The UI enables Sync when the configured file exists; a successful sync verifies account access. Authentication failures display failed status rather than simulated success. Cloud account sync additionally requires environment network access to `music.youtube.com`. OAuth client provisioning is not implemented by this application.
+
+Sync uses the pinned public `get_playlist(limit=None)` API to follow all continuations. The sync engine also supports paginated gateway adapters, stages every page with global positions, and commits each playlist only after exhaustive fetch and completeness checks. A failed page, repeated cursor, duplicate occurrence, missing occurrence identity, or count mismatch leaves the previous playlist snapshot intact. Retrying an incomplete playlist restarts it from page one and clears its old staging. Full sync is atomic per playlist, not across the whole account.
+
+Liked Music (`LM`) and library songs are read separately. Library membership and likes are applied from their respective sources; playlist metadata refreshes do not erase those flags. A playlist with unavailable entries that cannot be identified, or a remote count that changes during fetch, currently fails conservatively rather than committing a partial snapshot. Deleted remote playlists retain their last local snapshots.
+
+Search executes the query compiler against SQLite, including `artist:Ado`, `title:"Usseewa"`, `year:2020..2024`, `duration:>180`, boolean expressions, and `sort:duration:desc`. Browsing uses pages of 200 rows with windowed rendering; duplicate occurrences have independent selection IDs.
+
+### Validation
+
+```bash
+npm test                 # includes HTTP/SQLite integration and regression suites
 npm run test:invariants
-
-# Run gate validation suites (GATE-01 - GATE-05)
 npm run test:gates
-
-# Compile TypeScript and Vite production bundle
+npm run test:bridge      # Python public-API snapshot contract tests
 npm run build
 ```
+
+With Chromium installed, the optional browser smoke check uses an isolated fixture database and never contacts YouTube:
+
+```bash
+npm run test:browser
+```
+
+Set `YTM_BROWSER` to the Chromium executable if it is not named `chromium`. The smoke check exercises the built UI, SQLite search, 501-occurrence browsing, pagination, virtualization, duplicate selection, and truthful freshness. See [the remediation report](docs/review-remediation.md) for validation evidence and the remaining release gates.
+
+An opt-in live harness is available as `npm run test:live:read` after configuring `YTM_AUTH_FILE`. It uses a temporary database, makes read-only remote calls, verifies persisted playlist counts and browsing, and prints aggregate counts without account metadata or tokens. It was not run during remediation. Qualifying large-library behavior on a real account requires at least one playlist over 500 entries; zero such playlists in its report does not qualify that live scenario.
 
 ---
 

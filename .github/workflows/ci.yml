@@ -8,7 +8,10 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout repository
@@ -28,8 +31,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m venv .venv
-          . .venv/bin/activate
-          pip install -r python/requirements.txt
+          python -c "import os, subprocess; p = '.venv/Scripts/python.exe' if os.name == 'nt' else '.venv/bin/python3'; subprocess.check_call([p, '-m', 'pip', 'install', '-r', 'python/requirements.txt'])"
 
       - name: Install Node dependencies
         run: npm ci
@@ -45,3 +47,6 @@ jobs:
 
       - name: Run All Tests
         run: npm test
+
+      - name: Run Python Bridge Tests
+        run: npm run test:bridge

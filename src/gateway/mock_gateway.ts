@@ -25,6 +25,10 @@ export class MockYtmGateway implements YtmPlaylistGateway {
 
   public readonly observationCache = new RemoteObservationCache();
 
+  public startSession(sessionId: string): void {
+    this.observationCache.startSession(sessionId);
+  }
+
   constructor() {
     this.seedDefaults();
   }

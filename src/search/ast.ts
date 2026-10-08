@@ -22,7 +22,7 @@ export interface NotNode {
   expr: AstNode;
 }
 
-export type FieldIdentifier = 'artist' | 'album' | 'playlist' | 'year' | 'duration' | 'liked';
+export type FieldIdentifier = 'artist' | 'album' | 'playlist' | 'year' | 'duration' | 'liked' | 'title';
 export type ComparisonOperator = '>=' | '<=' | '>' | '<' | '!=' | '=';
 
 export interface FieldNode {

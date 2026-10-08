@@ -17,19 +17,30 @@ export class SearchQueryCompiler {
   public static compile(queryString: string, limit = 100): ParameterizedQueryPlan {
     const lexer = new Lexer(queryString);
     const tokens = lexer.tokenize();
+    let orderBy = 'tracks.title ASC, tracks.id ASC';
+    for (let i = 0; i < tokens.length; i++) {
+      if (tokens[i]?.value.toLowerCase() === 'sort' && tokens[i + 1]?.type === 'COLON') {
+        const columns: Record<string, string> = { title: 'tracks.title', duration: 'tracks.duration_seconds', dateAdded: 'tracks.first_seen_at' };
+        const column = columns[tokens[i + 2]?.value ?? ''];
+        const direction = tokens[i + 4]?.value.toUpperCase();
+        if (!column || tokens[i + 3]?.type !== 'COLON' || !['ASC', 'DESC'].includes(direction ?? '')) throw new Error('Invalid sort directive');
+        orderBy = `${column} ${direction}, tracks.id ASC`;
+        tokens.splice(i, 5); i--;
+      }
+    }
     const parser = new Parser(tokens);
     const ast = parser.parse();
 
     const compiler = new SearchQueryCompiler();
-    return compiler.compileAst(ast, limit);
+    return compiler.compileAst(ast, limit, orderBy);
   }
 
-  public compileAst(ast: AstNode | null, limit = 100): ParameterizedQueryPlan {
+  public compileAst(ast: AstNode | null, limit = 100, orderBy = 'tracks.title ASC, tracks.id ASC'): ParameterizedQueryPlan {
     this.params = [];
 
     if (!ast) {
       return {
-        sql: `SELECT tracks.* FROM tracks ORDER BY tracks.title ASC LIMIT ?;`,
+        sql: `SELECT tracks.* FROM tracks ORDER BY ${orderBy} LIMIT ?;`,
         params: [limit]
       };
     }
@@ -38,7 +49,7 @@ export class SearchQueryCompiler {
     this.params.push(limit);
 
     return {
-      sql: `SELECT tracks.* FROM tracks WHERE ${whereClause} ORDER BY tracks.title ASC LIMIT ?;`,
+      sql: `SELECT tracks.* FROM tracks WHERE ${whereClause} ORDER BY ${orderBy} LIMIT ?;`,
       params: this.params
     };
   }
@@ -69,13 +80,17 @@ export class SearchQueryCompiler {
   }
 
   private compileTerm(node: TermNode): string {
-    const termValue = node.isQuoted ? `"${node.term}"` : `${node.term.replace(/[*"']/g, '')}*`;
+    const termValue = `"${node.term.replace(/"/g, '""')}"${node.isQuoted ? '' : '*'}`;
     this.params.push(termValue);
     return `tracks.id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?)`;
   }
 
   private compileField(node: FieldNode): string {
     switch (node.field) {
+      case 'title': {
+        this.params.push(`%${node.value}%`);
+        return `tracks.title LIKE ?`;
+      }
       case 'artist': {
         const norm = normalizeText(node.value);
         this.params.push(norm);
@@ -97,20 +112,23 @@ export class SearchQueryCompiler {
           WHERE p.title = ?
         )`;
       }
-      case 'year': {
-        const year = parseInt(node.value, 10);
-        this.params.push(isNaN(year) ? 0 : year);
-        const op = this.validateOperator(node.operator);
-        return `tracks.year ${op} ?`;
-      }
+      case 'year':
       case 'duration': {
-        const sec = parseInt(node.value, 10);
-        this.params.push(isNaN(sec) ? 0 : sec);
-        const op = this.validateOperator(node.operator);
-        return `tracks.duration_seconds ${op} ?`;
+        const column = node.field === 'year' ? 'tracks.year' : 'tracks.duration_seconds';
+        const range = /^(\d+)\.\.(\d+)$/.exec(node.value);
+        if (range) {
+          const low = Number(range[1]), high = Number(range[2]);
+          if (low > high || node.operator !== '=') throw new Error('Invalid numeric range');
+          this.params.push(low, high);
+          return `${column} BETWEEN ? AND ?`;
+        }
+        if (!/^\d+$/.test(node.value)) throw new Error('Invalid numeric filter');
+        this.params.push(Number(node.value));
+        return `${column} ${this.validateOperator(node.operator)} ?`;
       }
       case 'liked': {
         // Asymmetric liked semantics (P1-F)
+        if (!['true', 'false', '1', '0'].includes(node.value.toLowerCase())) throw new Error('Invalid liked filter');
         const isLiked = node.value.toLowerCase() === 'true' || node.value === '1';
         if (isLiked) {
           return `tracks.rating = 'LIKE'`;

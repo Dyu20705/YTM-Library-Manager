@@ -7,3 +7,11 @@ dist/
 *.bak.*
 .DS_Store
 v1/
+browser.json
+oauth.json
+oauth_credentials.json
+.env
+.env.*
+!.env.example
+.local/
+__pycache__/

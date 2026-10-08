@@ -16,6 +16,21 @@ export class LogSanitizer {
     /"(?:cookie|authorization|token|feedbackToken|feedbackTokens|addToken|removeToken)"\s*:\s*"(?:[^"\\]|\\.)*"/gi;
 
   public static sanitize(text: string): string {
+    // Structured secrets can be objects/arrays, not just string-valued fields.
+    try {
+      const parsed = JSON.parse(text);
+      const redact = (value: unknown): unknown => {
+        if (Array.isArray(value)) return value.map(redact);
+        if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, child]) =>
+          [key, /cookie|authorization|token|secret|password|x-goog-authuser|authfile/i.test(key) ? '[REDACTED]' : redact(child)]));
+        if (typeof value === 'string') return this.sanitizePlainText(value);
+        return value;
+      };
+      return JSON.stringify(redact(parsed));
+    } catch { return this.sanitizePlainText(text); }
+  }
+
+  private static sanitizePlainText(text: string): string {
     let sanitized = text;
 
     sanitized = sanitized.replace(this.COOKIE_HEADER_REGEX, 'Cookie: [REDACTED]');
@@ -27,6 +42,7 @@ export class LogSanitizer {
       const parts = match.split(':');
       return `${parts[0]}: "[REDACTED]"`;
     });
+    sanitized = sanitized.replace(/(["'](?:feedbackTokens?|listenAgainFeedbackTokens|oauth|access_token|refresh_token)["']\s*:\s*)(\{[^}]*\}|\[[^\]]*\])/gi, '$1"[REDACTED]"');
 
     return sanitized;
   }

@@ -49,8 +49,8 @@ export class TrackRepository {
         album_name = excluded.album_name,
         duration_seconds = excluded.duration_seconds,
         year = excluded.year,
-        in_library = excluded.in_library,
-        rating = excluded.rating,
+        in_library = COALESCE(?, tracks.in_library),
+        rating = COALESCE(?, tracks.rating),
         is_available = excluded.is_available,
         artist_names_fts = excluded.artist_names_fts,
         last_seen_at = CURRENT_TIMESTAMP
@@ -67,7 +67,9 @@ export class TrackRepository {
       inLibraryInt,
       rating,
       isAvailableInt,
-      artistNamesFts
+      artistNamesFts,
+      input.inLibrary === undefined ? null : inLibraryInt,
+      input.rating ?? null
     ) as { id: number; first_seen_at: string; last_seen_at: string };
 
     const trackId = trackRow.id;
@@ -76,15 +78,13 @@ export class TrackRepository {
     this.db.prepare('DELETE FROM track_artists WHERE track_id = ?;').run(trackId);
 
     // 3. Normalize and insert artists
-    const artistObjects: Array<{ id: number; name: string }> = [];
-
     const findArtistStmt = this.db.prepare('SELECT id, name, normalized_name FROM artists WHERE normalized_name = ?;');
     const insertArtistStmt = this.db.prepare(`
       INSERT INTO artists (name, normalized_name) VALUES (?, ?)
       ON CONFLICT(normalized_name) DO UPDATE SET name = excluded.name
       RETURNING id;
     `);
-    const linkArtistStmt = this.db.prepare('INSERT INTO track_artists (track_id, artist_id, position) VALUES (?, ?, ?);');
+    const linkArtistStmt = this.db.prepare('INSERT OR IGNORE INTO track_artists (track_id, artist_id, position) VALUES (?, ?, ?);');
 
     for (let pos = 0; pos < input.artistNames.length; pos++) {
       const name = input.artistNames[pos] ?? '';
@@ -101,27 +101,9 @@ export class TrackRepository {
       }
 
       linkArtistStmt.run(trackId, artistId, pos);
-      artistObjects.push({ id: artistId, name });
     }
 
-    return {
-      id: trackId,
-      videoId: input.videoId,
-      title: input.title,
-      normalizedTitle,
-      artists: artistObjects,
-      albumName: input.albumName ?? null,
-      durationSeconds: input.durationSeconds,
-      year: input.year ?? null,
-      isAvailable: isAvailableInt === 1,
-      libraryState: {
-        inLibrary: inLibraryInt === 1,
-        rating,
-        updatedAt: new Date(trackRow.last_seen_at)
-      },
-      firstSeenAt: new Date(trackRow.first_seen_at),
-      lastSeenAt: new Date(trackRow.last_seen_at)
-    };
+    return this.findById(trackId)!;
   }
 
   public findByVideoId(videoId: string): YtmTrack | null {
