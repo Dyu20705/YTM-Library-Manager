@@ -58,12 +58,14 @@ export class LibraryApplication {
       if (!playlistId || !this.playlists.getPlaylist(playlistId)) throw new Error('Playlist not found');
       filters.push('pi.playlist_id = ?'); params.push(playlistId);
     }
+    const orderBy = playlist && !plan.explicitSort ? 'pi.position ASC, pi.remote_item_id ASC' :
+      `${plan.orderBy.replaceAll('tracks.', 'matched.')}${playlist ? ', pi.position ASC, pi.remote_item_id ASC' : ''}`;
     params.push(limit + 1, offset);
     const rows = this.connection.db.prepare(`SELECT matched.id ${playlist ? ', pi.remote_item_id, pi.position' : ''}
       FROM (${plan.sql.replace(/;$/, '')}) matched
       ${playlist ? 'JOIN playlist_items pi ON pi.track_id = matched.id' : ''}
       ${filters.length ? `WHERE ${filters.join(' AND ')}` : ''}
-      ${playlist ? 'ORDER BY pi.position ASC' : ''} LIMIT ? OFFSET ?`).all(...params) as Array<{ id: number; remote_item_id?: string; position?: number }>;
+      ORDER BY ${orderBy} LIMIT ? OFFSET ?`).all(...params) as Array<{ id: number; remote_item_id?: string; position?: number }>;
     return { hasMore: rows.length > limit, tracks: rows.slice(0, limit).map(row => ({
       ...this.tracks.findById(row.id)!,
       selectionId: playlist ? `${playlistId}:${row.remote_item_id}` : `track:${row.id}`,

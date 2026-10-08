@@ -22,7 +22,7 @@ export class SyncEngine {
   constructor(
     private readonly gateway: YtmPlaylistGateway,
     private readonly syncRepo: SyncRepository,
-    private readonly playlistRepo: PlaylistRepository,
+    _playlistRepo: PlaylistRepository,
     private readonly ftsManager: SearchIndexManager,
     controller?: AdaptiveSyncController
   ) {
@@ -70,10 +70,17 @@ export class SyncEngine {
         session.totalTracksIndexed = progress.tracks;
         this.syncRepo.updateSession(session);
       }
-      // Library membership is independent of likes. The gateway exhausts all continuations.
-      const librarySongs = await this.gateway.getLibrarySongs();
-      this.syncRepo.commitLibrary(librarySongs, playlistIds.includes('LM') ?
-        this.playlistRepo.getPlaylistItems('LM').map(i => i.track.videoId) : []);
+      const library = await this.gateway.getLibrarySnapshot?.();
+      if (!library || library.completeness !== 'VERIFIED' || library.expectedItemCount === undefined ||
+        library.expectedItemCount !== library.items.length) throw new Error('Unverified library completeness; prior membership retained');
+      // Read likes independently, even when a catalog adapter omitted LM. Do not treat omission as empty.
+      let likesCount: number | undefined;
+      const likes = await readCompletePlaylist(cursor => this.gateway.getPlaylistItems('LM', 100, cursor), page => {
+        if (page.expectedItemCount !== undefined) likesCount = page.expectedItemCount;
+      });
+      if (likesCount === undefined) throw new Error('Unverified likes completeness; prior membership retained');
+      this.syncRepo.commitLibrary(library.items, likes.map(item => item.videoId),
+        { libraryCount: library.expectedItemCount, likesCount });
       this.ftsManager.rebuildIndex();
       assertInvariant(this.ftsManager.getStatus() === 'HEALTHY', 'INV_016', 'FTS index must be consistent after full sync');
       session.status = 'COMPLETED';
@@ -111,10 +118,12 @@ export class SyncEngine {
     try {
       // Restart an incomplete playlist from page one. Old staging must not survive a changed snapshot.
       this.syncRepo.clearPlaylistStaging(sessionId, playlistId);
+      let expectedItemCount: number | undefined;
       const items = await readCompletePlaylist(async cursor => {
         await this.syncController.waitDelay();
         return this.gateway.getPlaylistItems(playlistId, 100, cursor);
       }, (page, offset, pageIndex) => {
+        if (page.expectedItemCount !== undefined) expectedItemCount = page.expectedItemCount;
         const stagingItems: StagingItem[] = page.items.map((item, idx) => {
           if (playlistId !== 'LM' && !item.remoteItemId) throw new Error('Missing playlist occurrence identity');
           return {
@@ -131,6 +140,7 @@ export class SyncEngine {
         checkpoint.updatedAt = new Date();
         this.syncRepo.saveCheckpoint(checkpoint);
       });
+      if (playlistId === 'LM' && expectedItemCount === undefined) throw new Error('Unverified likes completeness; prior snapshot retained');
       checkpoint.state = 'STAGED';
       checkpoint.updatedAt = new Date();
       this.syncRepo.saveCheckpoint(checkpoint);

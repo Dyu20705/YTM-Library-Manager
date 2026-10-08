@@ -1,44 +1,41 @@
-import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readFile, realpath } from 'node:fs/promises';
 import * as path from 'node:path';
-import { DatabaseConnection } from '../.local/build/src/storage/connection.js';
-import { LibraryApplication } from '../.local/build/src/application/service.js';
-import { SubprocessYtmGateway } from '../.local/build/src/gateway/ytm_gateway.js';
+import { runBoundedProcess } from './bounded-process.mjs';
 
-// Opt-in Tier 2 qualification. All remote calls are read-only; evidence contains counts only.
-if (!process.env.YTM_AUTH_FILE || !existsSync(process.env.YTM_AUTH_FILE)) {
-  console.error('Set YTM_AUTH_FILE to an existing private browser-auth file before running live read checks.');
-  process.exit(1);
-}
-const dir = await mkdtemp(path.join(tmpdir(), 'ytm-live-read-'));
-const connection = new DatabaseConnection({ path: path.join(dir, 'library.db'), schemaPath: 'src/storage/schema.sql' });
+// Owner-local ONLY, after separate access/authentication/Windows gates and approval.
+const controller = new AbortController();
+const stop = () => controller.abort();
+process.once('SIGINT', stop); process.once('SIGTERM', stop);
 try {
-  const gateway = new SubprocessYtmGateway({ authFilePath: process.env.YTM_AUTH_FILE, pythonPath: process.env.YTM_PYTHON_PATH });
-  const app = new LibraryApplication(connection, gateway, true);
-  await app.sync();
-  assert.equal(app.status().freshness.lastSyncResult, 'SUCCESS');
-  const catalog = app.playlists.listPlaylists();
-  let occurrences = 0;
-  let largePlaylists = 0;
-  for (const playlist of catalog) {
-    const items = app.playlists.getPlaylistItems(playlist.id);
-    assert.equal(items.length, playlist.trackCount);
-    assert.equal(new Set(items.map(i => i.remoteItemId)).size, items.length);
-    const first = app.browse('', 'PLAYLIST', playlist.id, 200, 0);
-    assert.equal(first.tracks.length, Math.min(200, items.length));
-    if (items.length > 500) largePlaylists++;
-    occurrences += items.length;
+  if (process.env.YTM_LIVE_APPROVED !== '1' || !process.env.YTM_AUTH_FILE || !process.env.YTM_LIVE_PLAN_FILE) {
+    throw new Error('Owner approval and private local paths required');
   }
-  const library = connection.db.prepare('SELECT COUNT(*) AS count FROM tracks WHERE in_library = 1').get().count;
-  const likes = connection.db.prepare("SELECT COUNT(*) AS count FROM tracks WHERE rating = 'LIKE'").get().count;
-  console.log(JSON.stringify({ check: 'live-read-only', passed: true, playlists: catalog.length, occurrences, playlistsOver500: largePlaylists,
-    librarySongs: library, likedSongs: likes, mutationsRun: 0 }));
+  const root = await realpath('.');
+  const auth = await realpath(process.env.YTM_AUTH_FILE);
+  const relative = path.relative(root, auth);
+  if (!path.isAbsolute(process.env.YTM_AUTH_FILE) || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+    throw new Error('Auth must be outside checkout');
+  }
+  const plan = JSON.parse(await readFile(process.env.YTM_LIVE_PLAN_FILE, 'utf8'));
+  // Reject invalid deadline before starting the worker; worker validates every other bound before network use.
+  if (!Number.isInteger(plan.deadlineSeconds) || plan.deadlineSeconds < 1 || plan.deadlineSeconds > 180) {
+    throw new Error('Invalid deadline');
+  }
+  const python = process.env.YTM_PYTHON_PATH ?? (process.platform === 'win32' ? '.venv/Scripts/python.exe' : '.venv/bin/python3');
+  const output = await runBoundedProcess(python, ['python/live_qualification.py'], { authFile: auth, plan },
+    { deadlineMs: plan.deadlineSeconds * 1000, signal: controller.signal });
+  const result = JSON.parse(output);
+  const count = value => Number.isInteger(value) && value >= 0 && value <= plan.maxItems;
+  if (result.status !== 'READ_COUNTS_MATCH' || !Number.isInteger(result.requests) || result.requests < 0 || result.requests > plan.maxRequests ||
+    !Array.isArray(result.playlistCounts) || result.playlistCounts.length !== plan.playlists.length ||
+    !result.playlistCounts.every(count) || !count(result.librarySongs) || !count(result.likedSongs)) throw new Error('Qualification stopped');
+  // Only explicitly allowed aggregates leave the worker; never echo arbitrary stdout.
+  console.log(JSON.stringify({ check: 'bounded-live-read', status: result.status, requests: result.requests,
+    playlistCounts: result.playlistCounts, librarySongs: result.librarySongs, likedSongs: result.likedSongs,
+    membershipPromoted: false, identityVerified: false, orderVerified: false, mutationsRun: 0 }));
 } catch {
-  console.error('Live read validation failed. Check the auth file, account access, network policy, and remote snapshot completeness. No mutations were run.');
+  console.error('Bounded read stopped. No full sync or mutations were run; verify scope and gates locally.');
   process.exitCode = 1;
 } finally {
-  connection.close();
-  await rm(dir, { recursive: true, force: true });
+  process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop);
 }

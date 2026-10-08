@@ -14,8 +14,10 @@
     "build:server": "tsc",
     "start": "node .local/build/src/server/main.js",
     "test:bridge": "node scripts/test-bridge.mjs",
+    "test:process": "node --test tests/process/*.test.mjs",
+    "auth:provision": "node scripts/provision-auth.mjs",
     "test:browser": "npm run build && node scripts/browser-smoke.mjs",
-    "test:live:read": "npm run build:server && node scripts/live-read-smoke.mjs"
+    "test:live:read": "node scripts/live-read-smoke.mjs"
   },
   "keywords": ["youtube-music", "ytmusic", "library-manager", "local-first", "sqlite", "fts5"],
   "author": "",

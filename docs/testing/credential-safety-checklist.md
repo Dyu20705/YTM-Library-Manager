@@ -1,6 +1,6 @@
 # Credential safety — Windows 11 và Linux
 
-**HOLD: chưa được thực hiện authentication.** Preflight phát hiện static-file exposure, CLI output leak và browser smoke tắt sandbox. Owner chỉ đang chuẩn bị profile trống. Các lệnh metadata/storage bên dưới dành cho gate C trong tương lai sau khi blocker được xử lý; agent không thực thi chúng trên credential thật.
+**HOLD: chưa được thực hiện authentication.** Static serving và provisioning có remediation + synthetic regressions; browser sandbox cloud vẫn BLOCKED, Windows/independent CI và terms/access chưa đạt. Owner xác nhận profile YTM Test đã tạo, chưa đăng nhập. Các lệnh bên dưới chỉ dành cho gate C tương lai trên máy owner sau khi blocker được xử lý; agent không thực thi trên credential thật.
 
 ## Credential có quyền gì?
 
@@ -14,9 +14,11 @@ Package thực tế là `ytmusicapi==1.12.2`. Đã kiểm tra `ytmusicapi --help
 
 **Không dùng trực tiếp lệnh `ytmusicapi browser` để tạo auth ở trạng thái hiện tại.** Console entry point gọi `sys.exit(main())`, trong khi `main()` trả về chuỗi JSON của `setup()`. Với kết quả kiểu chuỗi, Python in chuỗi ra stderr và trả exit code lỗi. Kiểm tra với kết quả giả đã xác nhận đường này; không dùng/đọc credential thật. Trên Windows phải xác minh console wrapper riêng trước khi cho phép dùng.
 
-Trước gate C2 cần một phương thức tạo file trên máy owner mà **discard giá trị trả về**, không log/print auth JSON, không truyền headers qua argv, không ghi transcript và không xuất traceback chứa input. Có thể đánh giá một helper cục bộ dựa trên API `ytmusicapi.setup(filepath=...)`, nhưng chưa cung cấp hay phê duyệt helper đó ở lượt này. Không đổi sang OAuth như workaround: ứng dụng chưa có OAuth client provisioning.
+Phương thức được review hiện có: `npm run auth:provision` → `scripts/provision-auth.mjs` → `python/provision_browser_auth.py`. Chỉ máy owner/private interactive terminal sau gates; agent/CI không dùng credential thật. Helper dùng `ytmusicapi.setup(filepath=None, headers_raw=...)`, suppress stdout/stderr dependency và discard return sau khi ghi file. Headers nhập từng dòng bằng `getpass`, blank kết thúc; nếu hidden input không khả dụng thì dừng, không fallback echo. Không paste headers vào shell command/argv, chat hay agent terminal. Không bật transcript/recording. Dependency exception không được in traceback.
 
-Khi được phép về sau, owner tự đọc tài liệu browser auth, thao tác DevTools trong đúng profile test và nhập headers vào phương thức cục bộ đã được đánh giá. Không copy request thành lệnh cURL, không paste vào agent terminal/chat. Hàm setup hiện dùng `input()`, không che input; terminal của owner phải riêng tư, không có AI/remote session/transcript/screen recording. Nếu điều kiện bảo vệ input/output chưa đạt, giữ BLOCKED. Không tắt browser security để thu thập headers.
+Helper yêu cầu YTM_AUTH_FILE là absolute path tới file mới ngoài checkout, parent không symlink/junction/reparse point. Linux parent phải owned 700, file exclusive 600. Windows helper kiểm tra metadata ACL owner hiện tại, chỉ Allow current owner hoặc SYSTEM trước input; owner vẫn phải chuẩn bị và review directory/file ACL theo phần dưới. Không overwrite file có sẵn, không sửa ACL storage cũ. Synthetic helper tests chạy Linux; Windows path được đưa vào matrix CI nhưng chưa có kết quả độc lập. CLI gốc vẫn không được dùng.
+
+Preview tương lai sau gate C: đặt **path** YTM_AUTH_FILE trong local session, chạy `npm run auth:provision`, kiểm tra metadata/ACL rồi unset path nếu chưa chạy app. Chưa chạy preview này lúc hiện tại. Không đổi OAuth, MFA, security settings, TLS hoặc browser sandbox để workaround.
 
 ## C3 — Storage Windows: ngoài Git, webroot và vùng đồng bộ
 
@@ -29,6 +31,8 @@ $authDir = Join-Path $env:LOCALAPPDATA 'YTM-Library-Manager-TestAuth'
 if (Test-Path -LiteralPath $authDir) { throw 'Thư mục đã tồn tại: kiểm tra metadata/ACL thủ công trước.' }
 New-Item -ItemType Directory -Path $authDir | Out-Null
 $ownerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+icacls.exe $authDir /setowner "*$($ownerSid)"
+if ($LASTEXITCODE -ne 0) { throw 'Thiết lập owner thất bại; dừng.' }
 icacls.exe $authDir /inheritance:r /grant:r "*$($ownerSid):(OI)(CI)F"
 if ($LASTEXITCODE -ne 0) { throw 'Thiết lập ACL thất bại; dừng.' }
 (Get-Acl -LiteralPath $authDir).Access |
@@ -91,7 +95,7 @@ auth_dir="$HOME/.local/share/ytm-library-manager-test-auth"
 test ! -e "$auth_dir" || { echo 'Existing storage: review permissions first'; exit 1; }
 umask 077
 mkdir -m 700 -p "$auth_dir"
-# Auth generation remains HOLD pending the reviewed local method.
+# Authentication remains HOLD pending Windows/access/sandbox gates.
 auth_file="$auth_dir/browser.json"
 # After generation, metadata only:
 test -f "$auth_file"

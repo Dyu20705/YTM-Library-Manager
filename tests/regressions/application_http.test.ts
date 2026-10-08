@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { DatabaseConnection } from '../../src/storage/connection.js';
@@ -17,13 +17,13 @@ import { TrackRow } from '../../src/application/contracts.js';
 
 const cleanup: Array<() => Promise<void> | void> = [];
 afterEach(async () => { for (const clean of cleanup.splice(0).reverse()) await clean(); });
-async function setup(connected = true) {
+async function setup(connected = true, uiDirectory?: string) {
   const dir = mkdtempSync(path.join(tmpdir(), 'ytm-http-')); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'library.db');
   const connection = new DatabaseConnection({ path: file }); cleanup.push(() => connection.close());
   const gateway = new MockYtmGateway();
   const app = new LibraryApplication(connection, gateway, connected, new AdaptiveSyncController({ currentDelayMs: 0 }));
-  const server = createApplicationServer(app);
+  const server = createApplicationServer(app, uiDirectory);
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   cleanup.push(() => new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); }));
   const address = server.address() as { port: number };
@@ -32,6 +32,65 @@ async function setup(connected = true) {
 }
 
 describe('Read-only application integration', () => {
+  it('serves only manifest assets and rejects credentials, config, database, and symlink escapes', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'ytm-static-'));
+    cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+    const root = path.join(dir, 'dist');
+    mkdirSync(path.join(root, '.vite'), { recursive: true }); mkdirSync(path.join(root, 'assets'));
+    writeFileSync(path.join(root, 'index.html'), '<html>fixture</html>');
+    writeFileSync(path.join(root, 'assets/app-abcdefgh.js'), 'public fixture');
+    writeFileSync(path.join(root, 'browser.json'), 'synthetic-secret');
+    writeFileSync(path.join(root, '.env'), 'synthetic-secret');
+    writeFileSync(path.join(root, 'library.db'), 'synthetic-secret');
+    writeFileSync(path.join(dir, 'outside.js'), 'synthetic-secret');
+    writeFileSync(path.join(root, '.vite/manifest.json'), JSON.stringify({ app: { file: 'assets/app-abcdefgh.js',
+      assets: ['assets/escape-abcdefgh.js', 'assets/inside-abcdefgh.js', 'browser.json', 'library.db', 'assets/credential-abcdefgh.js'] } }));
+    // Windows directory junctions do not require file-symlink privilege.
+    symlinkSync(dir, path.join(root, 'assets/linked'), process.platform === 'win32' ? 'junction' : 'dir');
+    // File symlinks need Developer Mode on Windows; test escape through a junction there instead.
+    if (process.platform !== 'win32') {
+      symlinkSync(path.join(dir, 'outside.js'), path.join(root, 'assets/escape-abcdefgh.js'));
+      symlinkSync(path.join(root, 'browser.json'), path.join(root, 'assets/inside-abcdefgh.js'));
+      symlinkSync(path.join(dir, 'outside.js'), path.join(root, 'escape.txt'));
+    } else {
+      writeFileSync(path.join(dir, 'escape-abcdefgh.js'), 'synthetic-secret');
+      symlinkSync(dir, path.join(root, 'linked-root'), 'junction');
+    }
+    const { base } = await setup(false, root);
+    expect((await fetch(`${base}/`)).status).toBe(200);
+    expect((await fetch(`${base}/assets/app-abcdefgh.js`)).status).toBe(200);
+    for (const name of ['/browser.json', '/.env', '/library.db', '/escape.txt', '/.vite/manifest.json',
+      '/assets/escape-abcdefgh.js', '/assets/inside-abcdefgh.js', '/assets/linked/outside.js', '/assets/credential-abcdefgh.js']) {
+      const response = await fetch(`${base}${name}`);
+      expect([403, 404]).toContain(response.status);
+      expect(await response.text()).not.toContain('synthetic-secret');
+    }
+    const outsideAssets = path.join(dir, 'outside-assets'); mkdirSync(outsideAssets);
+    writeFileSync(path.join(outsideAssets, 'app-abcdefgh.js'), 'synthetic-secret');
+    renameSync(path.join(root, 'assets'), path.join(root, 'old-assets'));
+    symlinkSync(outsideAssets, path.join(root, 'assets'), process.platform === 'win32' ? 'junction' : 'dir');
+    const escaped = await fetch(`${base}/assets/app-abcdefgh.js`);
+    expect([403, 404]).toContain(escaped.status);
+    expect(await escaped.text()).not.toContain('synthetic-secret');
+  });
+
+  it('keeps playlist position by default and explicit sorting stable across occurrence pages', async () => {
+    const { app, connection } = await setup(false);
+    const repo = new TrackRepository(connection.db);
+    app.playlists.upsertPlaylist({ id: 'ORDER', title: 'Order fixture', isEditable: false });
+    const items = [20, 10, 20, 30].map((duration, position) => {
+      const track = repo.upsert({ videoId: `duration-${duration}`, title: 'Tie title', artistNames: [], durationSeconds: duration });
+      return { trackId: track.id, videoId: track.videoId, remoteItemId: `occ-${position}`, position };
+    });
+    app.playlists.replaceItems('ORDER', items);
+    expect(app.browse('', 'PLAYLIST', 'ORDER', 2, 0).tracks.map(t => t.position)).toEqual([0, 1]);
+    const pages = [0, 2].flatMap(offset => app.browse('sort:duration:desc', 'PLAYLIST', 'ORDER', 2, offset).tracks);
+    expect(pages.map(t => t.position)).toEqual([3, 0, 2, 1]);
+    expect(new Set(pages.map(t => t.selectionId)).size).toBe(4);
+    const all = [0, 2].flatMap(offset => app.browse('sort:duration:desc', 'ALL', undefined, 2, offset).tracks);
+    expect(all.map(t => t.durationSeconds)).toEqual([30, 20, 10]);
+  });
+
   it('syncs through HTTP, persists SQLite, searches real data, and distinguishes duplicate occurrences', async () => {
     const { app, gateway, base, file } = await setup();
     gateway.addExternalItem('PL_JPOP', { videoId: 'v1_ado', remoteItemId: 'duplicate', title: 'Usseewa', artistNames: ['Ado'], durationSeconds: 204, year: 2020 });

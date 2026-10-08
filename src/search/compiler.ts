@@ -6,6 +6,8 @@ import { Parser } from './parser.js';
 export interface ParameterizedQueryPlan {
   sql: string;
   params: unknown[];
+  orderBy: string;
+  explicitSort: boolean;
 }
 
 export class SearchQueryCompiler {
@@ -17,6 +19,7 @@ export class SearchQueryCompiler {
   public static compile(queryString: string, limit = 100): ParameterizedQueryPlan {
     const lexer = new Lexer(queryString);
     const tokens = lexer.tokenize();
+    let explicitSort = false;
     let orderBy = 'tracks.title ASC, tracks.id ASC';
     for (let i = 0; i < tokens.length; i++) {
       if (tokens[i]?.value.toLowerCase() === 'sort' && tokens[i + 1]?.type === 'COLON') {
@@ -24,6 +27,7 @@ export class SearchQueryCompiler {
         const column = columns[tokens[i + 2]?.value ?? ''];
         const direction = tokens[i + 4]?.value.toUpperCase();
         if (!column || tokens[i + 3]?.type !== 'COLON' || !['ASC', 'DESC'].includes(direction ?? '')) throw new Error('Invalid sort directive');
+        explicitSort = true;
         orderBy = `${column} ${direction}, tracks.id ASC`;
         tokens.splice(i, 5); i--;
       }
@@ -32,7 +36,7 @@ export class SearchQueryCompiler {
     const ast = parser.parse();
 
     const compiler = new SearchQueryCompiler();
-    return compiler.compileAst(ast, limit, orderBy);
+    return { ...compiler.compileAst(ast, limit, orderBy), explicitSort };
   }
 
   public compileAst(ast: AstNode | null, limit = 100, orderBy = 'tracks.title ASC, tracks.id ASC'): ParameterizedQueryPlan {
@@ -41,7 +45,7 @@ export class SearchQueryCompiler {
     if (!ast) {
       return {
         sql: `SELECT tracks.* FROM tracks ORDER BY ${orderBy} LIMIT ?;`,
-        params: [limit]
+        params: [limit], orderBy, explicitSort: false
       };
     }
 
@@ -50,7 +54,7 @@ export class SearchQueryCompiler {
 
     return {
       sql: `SELECT tracks.* FROM tracks WHERE ${whereClause} ORDER BY ${orderBy} LIMIT ?;`,
-      params: this.params
+      params: this.params, orderBy, explicitSort: false
     };
   }
 

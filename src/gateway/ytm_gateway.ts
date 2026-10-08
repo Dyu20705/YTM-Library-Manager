@@ -157,6 +157,12 @@ export class SubprocessYtmGateway implements YtmPlaylistGateway {
     });
   }
 
+  public async getLibrarySnapshot() {
+    // Exhausted continuations do not prove that upstream omitted no records.
+    // 1.12.2 exposes no independent library total; never infer absence from this array.
+    return { items: await this.getLibrarySongs(), completeness: 'UNVERIFIED' as const };
+  }
+
   private readPlaylist(playlistId: string): Promise<RemoteTrackItem[]> {
     return readCompletePlaylist(cursor => this.getPlaylistItems(playlistId, 100, cursor));
   }

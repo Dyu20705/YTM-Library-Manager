@@ -2,7 +2,7 @@
 
 Ngày: 2026-10-08. Workspace đã xác định: `/workspace/YTM-Library-Manager`.
 
-**Gate hiện tại: Phase A FAIL; authentication và live qualification BLOCKED.** Chỉ chuẩn bị cách ly tài khoản/browser ở bước B1. Chưa tạo auth file, chưa cấu hình credential, chưa chạy Sync. Xem [báo cáo](live-qualification-report.md). Tài liệu này là hướng dẫn cho owner trên máy cá nhân; không phải lệnh cho cloud agent thực thi.
+**Gate hiện tại: Phase A chưa đạt qualification; authentication và live qualification BLOCKED.** Chỉ chuẩn bị cách ly tài khoản/browser ở bước B1. Chưa tạo auth file, chưa cấu hình credential, chưa chạy Sync. Xem [báo cáo](live-qualification-report.md). Tài liệu này là hướng dẫn cho owner trên máy cá nhân; không phải lệnh cho cloud agent thực thi.
 
 ## B1 — Bước được mở: chọn cách ly và tạo profile trống
 
@@ -34,7 +34,7 @@ Ba URL trả HTTP 403 khi agent thử đọc trang công khai không đăng nh�
 
 ytmusicapi là unofficial client. Tài khoản test và read-only requests không tự tạo ra quyền automated access. Documentation của thư viện chỉ mô tả kỹ thuật, không thay thế điều khoản Google/YouTube. Agent không đưa ra bảo đảm pháp lý.
 
-## B2 — BLOCKED bởi preflight và terms/access: chuẩn bị tài khoản thủ công
+## B2 — BLOCKED bởi qualification và terms/access: chuẩn bị tài khoản thủ công
 
 Chỉ sau khi xử lý preflight, giải quyết terms/access và owner muốn tiếp tục gate này, hướng dẫn từng bước:
 

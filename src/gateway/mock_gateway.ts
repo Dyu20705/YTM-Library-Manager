@@ -4,7 +4,8 @@ import {
   RemotePlaylistSummary,
   RemoteTrackItem,
   AddItemRequest,
-  RemoveItemRequest
+  RemoveItemRequest,
+  MembershipSnapshot
 } from './interfaces.js';
 import { MoveAnchor, RemoteMutationResult } from '../domain/mutation.js';
 import { RatingState } from '../domain/types.js';
@@ -123,7 +124,7 @@ export class MockYtmGateway implements YtmPlaylistGateway {
     playlistId: string,
     limit?: number,
     cursor?: string
-  ): Promise<{ items: RemoteTrackItem[]; nextCursor?: string }> {
+  ): Promise<{ items: RemoteTrackItem[]; nextCursor?: string; expectedItemCount?: number }> {
     this.checkRateLimit();
     const allItems = this.playlistItems.get(playlistId) ?? [];
 
@@ -147,12 +148,17 @@ export class MockYtmGateway implements YtmPlaylistGateway {
       }
     }
 
-    return { items: [...pageItems], nextCursor };
+    return { items: [...pageItems], nextCursor, expectedItemCount: allItems.length };
   }
 
   public async getLibrarySongs(_limit?: number): Promise<RemoteTrackItem[]> {
     this.checkRateLimit();
     return [...this.librarySongs];
+  }
+
+  public async getLibrarySnapshot(): Promise<MembershipSnapshot<RemoteTrackItem>> {
+    const items = await this.getLibrarySongs();
+    return { items, completeness: 'VERIFIED' as const, expectedItemCount: items.length };
   }
 
   public async addItems(playlistId: string, items: AddItemRequest[]): Promise<RemoteMutationResult> {

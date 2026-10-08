@@ -36,11 +36,11 @@ The system formally guarantees 23 domain invariants across 5 critical implementa
 
 | Gate | Description | Tier 1 (Automated CI) | Tier 2 (Live Account) |
 |---|---|---|---|
-| **GATE-01** | Remote API Compatibility (`ytmusicapi==1.12.2`) | Subprocess bridge ping, contract tests, error code mapping | Verified with real `browser.json` / session credentials |
-| **GATE-02** | Sync Atomicity, Crash Resilience & FTS Consistency | Simulated power-loss, staging rollback, FTS triggers | Large-library sync verification |
-| **GATE-03** | Mutation Outcome Determinism | Planned vs applied outcomes, idempotency, deduplication | Live add/remove/reorder execution |
-| **GATE-04** | Reconciliation & 3-Way Conflict Engine | Postcondition probe evaluations, external reordering conflict detection | Live probe reconciliation |
-| **GATE-05** | Credential & Storage Boundary Enforcement | Schema inspection, log sanitization, session cache scoping | Process memory audit |
+| **GATE-01** | Remote API Compatibility (`ytmusicapi==1.12.2`) | Subprocess bridge ping, contract tests, error code mapping | NOT_RUN — live account access remains blocked |
+| **GATE-02** | Sync Atomicity, Crash Resilience & FTS Consistency | Simulated power-loss, staging rollback, FTS triggers | NOT_RUN — large-library sync |
+| **GATE-03** | Mutation Outcome Determinism | Planned vs applied outcomes, idempotency, deduplication | NOT_RUN — mutations disabled |
+| **GATE-04** | Reconciliation & 3-Way Conflict Engine | Postcondition probe evaluations, external reordering conflict detection | NOT_RUN — live reconciliation |
+| **GATE-05** | Credential & Storage Boundary Enforcement | Schema inspection, log sanitization, session cache scoping | NOT_RUN — credential memory audit |
 
 ---
 
@@ -97,29 +97,17 @@ The app starts with an empty/local SQLite library, not sample tracks. Previously
 
 ### Connect and sync (read-only)
 
-Prepare a browser authentication file using the pinned ytmusicapi browser-auth instructions on your own machine. Keep it outside the repository; never paste credentials into chat or logs. Common auth filenames and `.local/` are ignored by Git, but an arbitrary filename is not automatically protected.
+**Authentication and live qualification remain BLOCKED.** Read the [credential checklist](docs/testing/credential-safety-checklist.md) and [bounded live plan](docs/testing/live-readonly-test-plan.md) first. Account ownership and technical documentation do not establish permission for automated access. Never place account credentials in cloud environments, CI, chat, repository files, transcripts, or served directories.
 
-Set the **path**, not the credential contents, before starting the service:
+A reviewed owner-local provisioning helper is available as `npm run auth:provision`. It accepts hidden input only in a private interactive terminal, discards the dependency setup return value, writes a new file outside the checkout, validates private directory permissions/Windows ACLs, and emits generic errors. Do not run the dependency's `ytmusicapi browser` console entrypoint. The helper was tested with synthetic data on Linux; actual Windows provisioning and authentication have not been qualified. Do not run it before the owner gates permit authentication.
 
-```bash
-export YTM_AUTH_FILE=/private/path/browser.json
-npm run dev
-```
-
-On Windows PowerShell:
-
-```powershell
-$env:YTM_AUTH_FILE = 'C:\private\browser.json'
-npm run dev
-```
-
-The UI enables Sync when the configured file exists; a successful sync verifies account access. Authentication failures display failed status rather than simulated success. Cloud account sync additionally requires environment network access to `music.youtube.com`. OAuth client provisioning is not implemented by this application.
+`YTM_AUTH_FILE` is an owner-local runtime **path**, never credential contents. File presence means configured storage, not verified identity/access. OAuth provisioning is not implemented.
 
 Sync uses the pinned public `get_playlist(limit=None)` API to follow all continuations. The sync engine also supports paginated gateway adapters, stages every page with global positions, and commits each playlist only after exhaustive fetch and completeness checks. A failed page, repeated cursor, duplicate occurrence, missing occurrence identity, or count mismatch leaves the previous playlist snapshot intact. Retrying an incomplete playlist restarts it from page one and clears its old staging. Full sync is atomic per playlist, not across the whole account.
 
-Liked Music (`LM`) and library songs are read separately. Library membership and likes are applied from their respective sources; playlist metadata refreshes do not erase those flags. A playlist with unavailable entries that cannot be identified, or a remote count that changes during fetch, currently fails conservatively rather than committing a partial snapshot. Deleted remote playlists retain their last local snapshots.
+Liked Music (`LM`) and library songs are read separately. Destructive membership updates require a VERIFIED library snapshot with an independent expected count and a count-checked Likes snapshot. The pinned adapter currently marks library completeness UNVERIFIED because its public API exposes no independent total; full sync therefore fails conservatively, retaining membership and successful freshness from the prior sync. Per-playlist promotions may already have completed. This limitation prevents a production/live qualification claim; playlist metadata refreshes do not erase those flags. A playlist with unavailable entries that cannot be identified, or a remote count that changes during fetch, currently fails conservatively rather than committing a partial snapshot. Deleted remote playlists retain their last local snapshots.
 
-Search executes the query compiler against SQLite, including `artist:Ado`, `title:"Usseewa"`, `year:2020..2024`, `duration:>180`, boolean expressions, and `sort:duration:desc`. Browsing uses pages of 200 rows with windowed rendering; duplicate occurrences have independent selection IDs.
+Search executes the query compiler against SQLite, including `artist:Ado`, `title:"Usseewa"`, `year:2020..2024`, `duration:>180`, boolean expressions, and `sort:duration:desc`. Playlist order defaults to occurrence position; explicit sorting overrides it with stable track/occurrence tie-breakers at the outer SQL query. Browsing uses pages of 200 rows with windowed rendering; duplicate occurrences have independent selection IDs.
 
 ### Validation
 
@@ -127,7 +115,8 @@ Search executes the query compiler against SQLite, including `artist:Ado`, `titl
 npm test                 # includes HTTP/SQLite integration and regression suites
 npm run test:invariants
 npm run test:gates
-npm run test:bridge      # Python public-API snapshot contract tests
+npm run test:bridge      # Python snapshot, provisioning and transport-budget fixtures
+npm run test:process     # deadline/cancellation tests without credentials
 npm run build
 ```
 
@@ -137,9 +126,11 @@ With Chromium installed, the optional browser smoke check uses an isolated fixtu
 npm run test:browser
 ```
 
-Set `YTM_BROWSER` to the Chromium executable if it is not named `chromium`. The smoke check exercises the built UI, SQLite search, 501-occurrence browsing, pagination, virtualization, duplicate selection, and truthful freshness. See [the remediation report](docs/review-remediation.md) for validation evidence and the remaining release gates.
+Set `YTM_BROWSER` to the Chromium executable if it is not named `chromium`. The smoke check retains the Chromium sandbox and exits 2 with BLOCKED if secure startup is unavailable. The app uses local system fonts. The smoke check exercises the built UI, SQLite search, 501-occurrence browsing, pagination, virtualization, duplicate selection, and truthful freshness. See [the remediation report](docs/review-remediation.md) for validation evidence and the remaining release gates.
 
-An opt-in live harness is available as `npm run test:live:read` after configuring `YTM_AUTH_FILE`. It uses a temporary database, makes read-only remote calls, verifies persisted playlist counts and browsing, and prints aggregate counts without account metadata or tokens. It was not run during remediation. Qualifying large-library behavior on a real account requires at least one playlist over 500 entries; zero such playlists in its report does not qualify that live scenario.
+`npm run test:live:read` is now a separate, bounded owner-local sampling harness, not full account sync. A reviewed private plan selects at most three playlists, LM and Library, up to 20 HTTP requests, 100 items per resource and 180 seconds total. One Python process/session enforces the shared transport budget, read-endpoint allowlist, verified TLS, no redirects/retries, and stop on errors/challenges. Cancellation kills that worker and waits for closure. It emits aggregate counts only and never promotes membership or writes an account database. Count matches do not qualify identity, order, persistence, UI, or a >500 playlist. Owner approval, terms/access and Windows gates remain outstanding; no live run was made.
+
+CI now triggers on pushes to `review/**` and PRs to `main`, and includes Linux/Windows process/provisioning/security fixtures and sandboxed browser checks. Local results are not independent CI evidence. See [the qualification report](docs/testing/live-qualification-report.md) for current status.
 
 ---
 

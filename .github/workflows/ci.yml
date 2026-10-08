@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, "review/**" ]
   pull_request:
     branches: [ main ]
 
@@ -48,5 +48,20 @@ jobs:
       - name: Run All Tests
         run: npm test
 
+      - name: Run Bounded Process Cancellation Tests
+        run: npm run test:process
+
       - name: Run Python Bridge Tests
         run: npm run test:bridge
+
+      - name: Browser fixture with Chrome sandbox (Linux)
+        if: runner.os == 'Linux'
+        env:
+          YTM_BROWSER: /usr/bin/google-chrome
+        run: npm run test:browser
+
+      - name: Browser fixture with Chrome sandbox (Windows)
+        if: runner.os == 'Windows'
+        env:
+          YTM_BROWSER: 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+        run: npm run test:browser

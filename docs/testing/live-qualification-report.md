@@ -1,95 +1,53 @@
-# Secure test account & read-only qualification report
+# Báo cáo qualification sau code review remediation
 
-Ngày: 2026-10-08 (Asia/Bangkok). Workspace: `/workspace/YTM-Library-Manager`. Local HEAD: `146aacb`; working tree có các thay đổi remediation chưa commit và hướng dẫn testing mới. Môi trường thực chạy Linux, Node 24.19.0, Python 3.12.14, ytmusicapi 1.12.2. Đây không phải evidence Windows 11.
+Ngày: 2026-10-08 (Asia/Bangkok). Nhánh `review/local-service-readonly-qualification`; remediation tiếp nối base `13796df`. Runtime thực kiểm tra Linux, Node 24, Python 3.12, ytmusicapi 1.12.2. Local results không phải GitHub CI/Windows evidence.
 
-**Quyết định: BLOCKED cho authentication/live qualification.** Các local checks được phép pass, nhưng Phase A phát hiện security failures. Không credential thật được đọc/tạo, không authenticated request, không account creation/login, không remote mutation, không commit/push/release hay thay đổi/publish cloud settings trong lượt này.
+**Live/authentication: BLOCKED. Merge readiness: chưa được chứng minh.** Không dùng/tạo/đọc credential thật, không authenticated network run, không remote mutations. Owner xác nhận B1: chọn dedicated test account, profile YTM Test đã tạo và chưa đăng nhập. B2/account identity, access terms và fixture chưa xác nhận.
 
-## Phase A — Preflight
+## Findings và remediation
 
-Output A phân biệt PASS/FAIL/UNKNOWN; UNKNOWN được ánh xạ thành BLOCKED/NOT_RUN trong bảng qualification phía dưới.
-
-| Kiểm tra | Kết quả preflight | Evidence / giới hạn |
-| --- | --- | --- |
-| Harness chỉ gọi read operations | PASS | `scripts/live-read-smoke.mjs:20`, `src/application/service.ts`, `src/sync/sync_engine.ts`; chỉ playlist list/items và library songs |
-| HTTP API không có remote mutation routes | PASS | `src/server/http.ts`; unknown `/api/*` trả 404; regression test kiểm tra `/api/mutations`; local folder creation không là YouTube mutation |
-| Auth file không được static serve | FAIL | `src/server/http.ts:69` đọc mọi file có lexical path dưới uiDirectory; không sensitive-file deny/asset allowlist, không realpath containment |
-| API không trả session/credential/token | PASS | Status/playlists/track hydration chọn domain fields; synthetic redaction tests pass; không kiểm tra payload live |
-| Gateway không đưa secret trong argv | PASS | `src/gateway/ytm_gateway.ts` spawn chỉ script path, payload qua stdin; regression kiểm tra argv rỗng với synthetic token |
-| Application errors không echo credential | PASS | Gateway suppress raw stderr/malformed response; bridge trả generic errors; redaction fixtures pass |
-| Browser-auth console không lộ output | FAIL | Installed console wrapper `.venv/bin/ytmusicapi:8` gọi `sys.exit(main())`; `ytmusicapi/setup.py:94` trả JSON string. Synthetic return test xác nhận string sẽ đi ra stderr; không actual auth |
-| SQLite không có credential fields | PASS | `src/storage/schema.sql`, `tests/gates/gate05_credential_boundary.test.ts`; staging/library upsert chỉ chọn metadata; không dump DB hay đọc auth |
-| Backend/Vite bind loopback | PASS | `src/server/main.ts:18`, `vite.config.ts`, `scripts/dev.mjs`; owner không được override sang LAN/tunnel |
-| Credential trong tracked workspace | UNKNOWN | Metadata: 0 tracked auth/credential-named files; limited high-confidence scan text: 0 candidate files. Không đọc credential files/values; không quét toàn Git history, untracked/private storage |
-| Windows 11 hỗ trợ thực tế | UNKNOWN | Có platform paths, PowerShell hướng dẫn, CI matrix; chưa chạy Windows; không claim PASS |
-| Browser test giữ security bật | FAIL | `scripts/browser-smoke.mjs:34` có `--no-sandbox`; không chạy command trong lượt này |
-| Live workload/cancellation bounded | FAIL | `limit=None`, không hard cap HTTP requests/selected playlists/deadline chung; chỉ per-bridge 120s; descendant cancellation chưa qualify |
-
-### Security findings đã tái hiện bằng non-secret fixtures
-
-1. Auth filename static exposure: tạo fixture JSON chỉ chứa public test marker trong uiDirectory tạm. GET `/browser.json` → HTTP 200, markerServed=true. Không có credential thực.
-2. Symlink escape: symlink `escape.txt` trong uiDirectory tạm tới marker file bên ngoài. GET `/escape.txt` → HTTP 200, markerServed=true. Server/DB/temp directory đã đóng/xóa. `dist` hiện tại có 0 symlink và 0 sensitive-named files; đây là code vulnerability, không phải phát hiện credential bị lộ trên instance.
-3. Console auth output: thay `setup()` bằng stub trả chuỗi JSON giả và kiểm tra return/SystemExit của installed entrypoint. `would_print_auth_result_to_stderr=true`, actual_credentials_used=false, auth_file_created=false. Không chạy CLI tạo auth thật.
-
-Theo yêu cầu dừng khi có finding quan trọng, không mở gate authentication. Không sửa source trong lượt L2 advisory + bounded read-only này; đề xuất hardening trong [test plan](live-readonly-test-plan.md).
-
-## Terms/access references
-
-| Nguồn | Actual | Kết luận |
-| --- | --- | --- |
-| `https://www.youtube.com/t/terms` | Public unauthenticated GET: HTTP 403, curl exit 22 | Không đọc được điều khoản hiện hành |
-| `https://policies.google.com/terms` | Public unauthenticated GET: HTTP 403, curl exit 22 | Không đọc được điều khoản hiện hành |
-| `https://ytmusicapi.readthedocs.io/en/stable/setup/browser.html` | Public unauthenticated GET: HTTP 403, curl exit 22 | Không đối chiếu được stable docs; đã kiểm tra installed CLI/source bản pin |
-
-Không disable TLS, không đổi proxy/cấu hình access để bypass, không retry các URL đó. Chưa xác định cơ sở cho phép authenticated automation. Owner phải đọc nguồn hiện hành trên máy cá nhân và giải quyết quyền sử dụng trước gate E. Documentation kỹ thuật và sở hữu account riêng không thay quyền/điều khoản dịch vụ.
-
-## Phase D — Local validation mới trong lượt này
-
-Không cung cấp YTM_AUTH_FILE; chỉ kiểm tra tên/presence và nhận kết quả unset. Không dump process environment. Test fixtures/mutation simulations đều cục bộ, không gọi mutation service thật.
-
-| Command/check | Exit code | Evidence đã sanitize | Status |
+| Finding | Actual sau remediation | Evidence | Status |
 | --- | --- | --- | --- |
-| `npm test` | 0 | 78 tests, 12 files pass; HTTP/SQLite integration, 101/501 occurrence completeness, late-page rollback, duplicate selection, boundary/redaction | PASS |
-| `npm run test:bridge` | 0 | 3 Python tests pass; public unlimited snapshot contract, truncated snapshot rejected, nonexistent configured auth rejected | PASS |
-| `npm run build` | 0 | Strict TypeScript + Vite build pass, 1592 modules transformed | PASS |
-| `npm run test:browser` | — | Not executed: hard-coded --no-sandbox trái mandatory constraint. Historical smoke PASS không qualify task mới | BLOCKED |
-| Isolated backend startup/SIGTERM | 0 | Ephemeral port/DB, auth unset; idle server shutdown code=0, signal=null; fixture cleaned | PASS |
-| Dev supervisor/in-flight Python shutdown | — | Không có test chứng minh Windows/process-tree cancellation; không stop processes có sẵn của owner | NOT_RUN |
-| Limited scan của new local test logs | 0 | 0 high-confidence credential-pattern matches; không load actual auth; heuristic không là bảo đảm toàn diện | PASS |
-| Staged filename metadata | 0 | 0 staged files ở thời điểm kiểm tra; không stage/commit | PASS |
+| P0 static file exposure | Chỉ index + hashed assets trong Vite manifest; manifest canonical, sensitive extensions/names không allow; request canonical path phải đúng path được allow, chặn links kể cả trỏ nội bộ | application_http.test.ts: fake browser.json/.env/DB/escape.txt trả 404; manifest-listed symlink/asset-directory escape trả 403/404; valid asset/index 200 | PASS |
+| P1 credential CLI stderr leak | Không dùng dependency CLI; helper direct setup, hidden owner-local terminal input, suppress output, discard return, exclusive new file, Linux 700/600 và Windows owner ACL guard; generic errors | test_provisioning.py synthetic fixtures; no real auth | PASS |
+| P1 Library/Likes completeness | Membership promotion yêu cầu VERIFIED independent expected count; malformed/unverified snapshots fail trước reset. LM thiếu count không promote. Pinned adapter Library UNVERIFIED; full sync FAILED, giữ membership/success freshness cũ | sync_completeness.test.ts missing Library/mismatched count/missing Likes fault injection | PASS |
+| P1 bounded live workload | Tách khỏi full sync; 1 Python worker/shared transport, max 20 HTTP requests, 3 selected playlists, 100 items/resource, 180s deadline; no retry/redirect/mutation dispatch; cancellation chờ worker close | test_live_bounds.py; tests/process/cancellation.test.mjs; fake worker PID no longer exists after deadline | PASS |
+| P1 browser sandbox disabled | Bỏ insecure flag; secure startup không khả dụng ở cloud → exit 2 BLOCKED, không fallback | npm run test:browser, sandbox giữ bật | BLOCKED |
+| P2 sort/paging | Playlist default occurrence position; explicit sort + track/occurrence tie-breakers ở outer query, mọi collection có outer ORDER BY | application_http.test.ts adjacent pages có ties/duplicate occurrences | PASS |
+| P2 independent CI/docs | README Tier 2 toàn NOT_RUN; workflow triggers review push + main PR, includes Linux/Windows security/provision/process/browser fixtures | workflow source; GitHub API GraphQL 403; chưa độc lập xác minh run | BLOCKED |
 
-Raw credential-free command logs của lượt này lưu tạm ở `/tmp/ytm-qualification-evidence/` (npm-test.log, bridge.log, build.log); report này là summary bền vững. Không upload logs hoặc credential. Test `npm test` được chạy với HTTP(S)/ALL_PROXY trỏ tới loopback không phục vụ để chặn egress qua proxy của HTTP clients; không thay TLS checks. Đây là precaution cho clients dùng proxy, không phải chứng minh chặn mọi raw socket.
+PASS provisioning/bounds là synthetic contract trên Linux, không auth thật hoặc Windows qualification. Original dependency CLI vẫn có nguy cơ output và vẫn bị cấm dùng trực tiếp. Static probes trước remediation từng trả 200 với fake markers; không có bằng chứng credential thật đã lộ. Lượt mới kiểm tra regression sau sửa.
 
-## Qualification cases
-
-Trạng thái hợp lệ trong bảng này: PASS, FAIL, BLOCKED, NOT_RUN. Không ghi live PASS khi chưa chạy.
+## Local validation
 
 | Test ID | Expected | Actual | Evidence | Status |
 | --- | --- | --- | --- | --- |
-| PREFLIGHT-STATIC | Auth/sensitive file và outside-webroot symlink bị từ chối | Hai synthetic marker endpoints trả 200 | Fixture probe, `src/server/http.ts:69` | FAIL |
-| PREFLIGHT-CLI | Setup không in credential JSON | Installed entrypoint chuyển JSON return tới stderr | Synthetic return probe, installed setup/console source | FAIL |
-| LOCAL-01 | UI/API/SQLite/search path hoạt động | HTTP on-disk integration và compiler checks pass | application_http suite trong 78 tests | PASS |
-| LOCAL-02 | 501 occurrence sync hoàn chỉnh; lỗi giữ snapshot | Offline completeness/fault tests pass | sync_completeness suite | PASS |
-| LOCAL-03 | Duplicate occurrence chọn riêng; bounded rendering | SSR fixture pass | application_http render check | PASS |
-| LOCAL-04 | Không remote mutation route/control giả | Source không nối mutation callbacks; unknown API route 404 | UI source + HTTP regression | PASS |
-| LOCAL-05 | Freshness không giả lập | Persisted session/unsynced/error checks pass | application_http suite | PASS |
-| LOCAL-06 | Browser on-disk fixture với sandbox bật | Command chưa được phép chạy | scripts/browser-smoke.mjs:34 | BLOCKED |
-| LOCAL-07 | Backend idle shutdown sạch | Own isolated backend SIGTERM → 0 | Startup/shutdown probe | PASS |
-| LOCAL-08 | Full process-tree cancellation, Windows execution | Chưa kiểm chứng | Source review only | NOT_RUN |
-| ACCESS-01 | Điều khoản và cơ sở cho phép phù hợp | Public references 403; owner chưa xác nhận | Three public GET attempts | BLOCKED |
-| OWNER-01 | Account riêng + profile riêng đúng identity | B1 hoàn tất: owner chọn A, xác nhận profile YTM Test đã tạo và chưa đăng nhập; B2/identity chưa kiểm chứng | Owner confirmation in chat; no credentials supplied | NOT_RUN |
-| CREDENTIAL-01 | Private local file, ACL, outside Git/webroot, safe generation | Không credential được cung cấp/tạo/đọc; generation chưa an toàn | Presence-only checks; preflight failures | BLOCKED |
-| LIVE-01 | Đúng test account, authentication thành công | Không chạy | Gate A–D/access/owner approval chưa đạt | BLOCKED |
-| LIVE-02 | Library và Likes khớp UI official | Không chạy | No authenticated requests | BLOCKED |
-| LIVE-03 | Fixture playlist count/order/occurrence đúng | Không chạy | Owner fixture chưa xác nhận | BLOCKED |
-| LIVE-04 | Playlist >500 hợp lệ đầy đủ | Chưa có fixture live được xác nhận; offline 501 pass không thay thế | Offline tests only | NOT_RUN |
-| LIVE-05 | Snapshot live persist/restart/query | Không chạy | Temp live harness không được execute | BLOCKED |
-| LIVE-06 | Local fault injection bảo vệ snapshot | Offline failure safety pass; chưa kết luận trên snapshot live | Late-page failure regression | NOT_RUN |
-| LIVE-07 | UI trên data đã sync live, đúng freshness | Không chạy | No live DB/UI verification | BLOCKED |
+| LOCAL-01 | TypeScript/SQLite/HTTP/fault tests | 83 tests, 12 files, exit 0 | npm test | PASS |
+| LOCAL-02 | Python bridge/provisioning/transport-bound fixtures | 13 tests, exit 0 | npm run test:bridge | PASS |
+| LOCAL-03 | Deadline/cancellation/no echoed worker error | 3 tests, exit 0 | npm run test:process | PASS |
+| LOCAL-04 | Strict TypeScript + Vite manifest | exit 0 | npm run build | PASS |
+| LOCAL-05 | Browser fixture giữ sandbox | startup unavailable, exit 2 | npm run test:browser | BLOCKED |
+| CI-01 | Chính remediation HEAD pass Linux/Windows | GraphQL/REST API 403, kể cả explicit sandbox escalation; kết quả chưa kiểm chứng | GitHub API attempts, configured workflow | BLOCKED |
+| WINDOWS-01 | Owner-machine ACL/auth/browser/cancellation | Không chạy máy Windows | Linux evidence không thay thế | NOT_RUN |
 
-## Gate tiếp theo và cleanup
+Offline fixture files chỉ dùng synthetic data, temp storage cleanup; no actual credential input. No debug capture of requests/headers/HAR. Secret filename/high-confidence checks trước push chỉ áp dụng candidate files, không chứng minh toàn Git history/mọi secret absent.
 
-B1 đã hoàn tất theo xác nhận của owner: chọn dedicated Google test account, profile YTM Test đã tạo và chưa đăng nhập. Giữ profile chưa đăng nhập; owner đọc ba nguồn điều khoản/hướng dẫn trên máy cá nhân. Chưa có xác nhận terms/access. Xem [hướng dẫn B1](test-account-setup.md#b1--bước-được-mở-chọn-cách-ly-và-tạo-profile-trống).
+## Access và live gates
 
-Chờ xử lý security findings, kiểm chứng browser sandbox/cancellation và Windows, cùng giải quyết terms/access. Sau đó hướng dẫn B2/B3/C theo từng gate; không suy diễn permission live từ việc chuẩn bị account. Owner phải xem exact plan và đồng ý riêng một lần chạy live trên máy cá nhân. Không mang browser auth vào cloud/CI/settings.
+Ba public URLs đã thử ở preflight trước: YouTube Terms, Google Terms, stable ytmusicapi browser setup; mỗi URL HTTP 403/curl exit 22. Không bypass/proxy changes, không retry các trang đó trong remediation. Không xác minh được nội dung điều khoản hiện hành. Account ownership/documentation không thay quyền automation; chờ owner đọc trên máy cá nhân và giải quyết access.
 
-Fixture server/DB/process do các probes mới tạo đã được cleanup. Tests local không credential thật; auth environment không được đặt. Không thu hồi account, không xóa remote fixture, không đổi security settings. Mutation vẫn bị khóa trong UI/HTTP API; infrastructure mutation methods vẫn tồn tại và không được gọi live.
+| Test ID | Expected | Actual | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| OWNER-B1 | Dedicated account choice + empty profile | Owner chọn A; YTM Test đã tạo, chưa đăng nhập | Safe owner confirmation | PASS |
+| ACCESS-01 | Terms/access được giải quyết | Chưa xác nhận | Public sources 403 ở preflight | BLOCKED |
+| LIVE-01 | Đúng identity/auth | Không chạy | Access/Windows/approval gates chưa đạt | BLOCKED |
+| LIVE-02 | Library/Likes expected UI | Không chạy | Bounded plan chưa approve/run | BLOCKED |
+| LIVE-03 | Small fixture counts/order/occurrence | Không chạy | Owner fixture chưa xác nhận | BLOCKED |
+| LIVE-04 | >500 complete playlist | Không có eligible approved scope | Small runner không hỗ trợ >100/resource | NOT_RUN |
+| LIVE-05 | Live snapshot persistence/restart | Không chạy | Bounded sampling không ghi DB | BLOCKED |
+| LIVE-06 | Late-page fault trên live snapshot | Offline test PASS, live không chạy | Synthetic regression | NOT_RUN |
+| LIVE-07 | Live UI/freshness | Không chạy | Sandbox local BLOCKED, no live data | BLOCKED |
+
+## Gate tiếp theo
+
+Giữ profile chưa đăng nhập. Cần independent CI/Windows sandbox + helper/cancellation evidence, giải quyết terms/access, và review completeness limitation trước khi mở authentication. Full sync không được coi là thành công khi upstream library completeness chưa có bằng chứng độc lập; per-playlist checkpoints có thể đã promote trước failure. Không tự bật remote mutations, không merge/release hoặc publish cloud settings. Sau prerequisites, owner xem [exact bounded plan](live-readonly-test-plan.md) và chấp thuận riêng một run trên máy mình; agent không chạy hộ.

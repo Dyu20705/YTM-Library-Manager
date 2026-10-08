@@ -270,13 +270,22 @@ export class SyncRepository {
     } catch (err) { this.db.exec('ROLLBACK'); throw err; }
   }
 
-  public commitLibrary(songs: RemoteTrackItem[], likedVideoIds: string[]): void {
+  public commitLibrary(songs: RemoteTrackItem[], likedVideoIds: string[],
+    evidence: { libraryCount: number; likesCount: number }): void {
+    if (!Number.isInteger(evidence.libraryCount) || evidence.libraryCount < 0 ||
+      evidence.libraryCount !== songs.length || !Number.isInteger(evidence.likesCount) ||
+      evidence.likesCount < 0 || evidence.likesCount !== likedVideoIds.length ||
+      new Set(songs.map(song => song.videoId)).size !== songs.length ||
+      new Set(likedVideoIds).size !== likedVideoIds.length) {
+      throw new Error('Unverified membership snapshot');
+    }
     this.db.exec('BEGIN TRANSACTION');
     try {
       this.db.exec("UPDATE tracks SET in_library = 0, rating = CASE WHEN rating = 'LIKE' THEN 'INDIFFERENT' ELSE rating END");
       for (const song of songs) {
         if (!song.videoId || typeof song.title !== 'string') throw new Error('Incomplete library song');
-        this.trackRepo.upsert({ ...song, inLibrary: true });
+        const { rating: _rating, ...metadata } = song;
+        this.trackRepo.upsert({ ...metadata, inLibrary: true });
       }
       for (const videoId of likedVideoIds) this.trackRepo.setRating(videoId, 'LIKE');
       this.db.exec('COMMIT');

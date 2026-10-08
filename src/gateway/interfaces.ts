@@ -7,6 +7,13 @@ export interface PlaylistPage {
   expectedItemCount?: number;
 }
 
+/** Destructive membership promotion requires independently verified cardinality. */
+export interface MembershipSnapshot<T> {
+  items: T[];
+  completeness: 'VERIFIED' | 'UNVERIFIED';
+  expectedItemCount?: number;
+}
+
 export interface AddItemRequest {
   videoId: string;
 }
@@ -73,6 +80,7 @@ export interface YtmPlaylistGateway {
   getPlaylists(): Promise<RemotePlaylistSummary[]>;
   getPlaylistItems(playlistId: string, limit?: number, cursor?: string): Promise<PlaylistPage>;
   getLibrarySongs(limit?: number): Promise<RemoteTrackItem[]>;
+  getLibrarySnapshot?(): Promise<MembershipSnapshot<RemoteTrackItem>>;
 
   addItems(playlistId: string, items: AddItemRequest[]): Promise<RemoteMutationResult>;
   removeItems(playlistId: string, items: RemoveItemRequest[]): Promise<RemoteMutationResult>;

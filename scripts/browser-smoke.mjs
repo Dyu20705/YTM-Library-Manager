@@ -15,7 +15,8 @@ const dir = await mkdtemp(path.join(tmpdir(), 'ytm-browser-'));
 const connection = new DatabaseConnection({ path: path.join(dir, 'fixture.db'), schemaPath: 'src/storage/schema.sql' });
 const app = new LibraryApplication(connection, new MockYtmGateway(), false);
 const server = createApplicationServer(app, path.resolve('dist'));
-let browser, ws;
+let browser, browserClosed, ws;
+let browserReady = false;
 try {
   const tracks = new TrackRepository(connection.db);
   app.playlists.upsertPlaylist({ id: 'SMOKE', title: 'Browser smoke fixture', isEditable: false });
@@ -31,9 +32,10 @@ try {
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const appUrl = `http://127.0.0.1:${server.address().port}/`;
   browser = spawn(process.env.YTM_BROWSER ?? 'chromium', [
-    '--headless', '--no-sandbox', '--disable-dev-shm-usage', '--no-first-run', '--disable-breakpad',
-    '--remote-debugging-port=0', `--user-data-dir=${dir}/chrome`, 'about:blank'
-  ], { stdio: 'ignore', env: { ...process.env, XDG_CACHE_HOME: path.join(dir, 'cache'), XDG_CONFIG_HOME: path.join(dir, 'config') } });
+    '--headless', '--disable-dev-shm-usage', '--no-first-run', '--disable-breakpad',
+    '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', `--user-data-dir=${dir}/chrome`, 'about:blank'
+  ], { stdio: 'ignore', detached: process.platform !== 'win32', env: { ...process.env, XDG_CACHE_HOME: path.join(dir, 'cache'), XDG_CONFIG_HOME: path.join(dir, 'config') } });
+  browserClosed = new Promise(resolve => browser.once('close', resolve));
   let spawnError;
   browser.on('error', error => { spawnError = error; });
   let port;
@@ -48,6 +50,7 @@ try {
   const target = await (await fetch(`${browserUrl}/json/new?about:blank`, { method: 'PUT' })).json();
   ws = new WebSocket(target.webSocketDebuggerUrl);
   await once(ws, 'open');
+  browserReady = true;
   let nextId = 0;
   const pending = new Map();
   const errors = [];
@@ -104,10 +107,21 @@ try {
   assert.equal(await evaluate('document.body.innerText.includes("Apply")'), false);
   assert.deepEqual(errors, []);
   console.log('Browser smoke passed: SQLite search, 501-occurrence pagination, independent duplicate selection, windowed rendering, truthful freshness, disabled mutations.');
+} catch {
+  console.error(browserReady ? 'FAIL: browser fixture did not pass.' : 'BLOCKED: sandboxed Chromium is unavailable in this environment. Security flags were not relaxed.');
+  process.exitCode = browserReady ? 1 : 2;
 } finally {
   ws?.close();
   if (browser && browser.exitCode === null && !browser.killed) {
-    const exited = once(browser, 'exit'); browser.kill(); await exited;
+    if (browser.pid) {
+      if (process.platform === 'win32') {
+        const killer = spawn('taskkill', ['/PID', String(browser.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+        await new Promise(resolve => { killer.once('close', resolve); killer.once('error', resolve); });
+      } else {
+        try { process.kill(-browser.pid, 'SIGKILL'); } catch { browser.kill('SIGKILL'); }
+      }
+    }
+    await browserClosed;
   }
   await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
   connection.close();
